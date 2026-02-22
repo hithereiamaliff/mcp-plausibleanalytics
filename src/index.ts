@@ -1,84 +1,81 @@
 #!/usr/bin/env node
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequest,
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { QueryArgs, queryTool } from "./plausible/query.js";
-import { plausibleClient } from "./plausible/client.js";
 
-const server = new Server(
-  {
-    name: "plausible-model-context-protocol-server",
-    version: "0.0.1",
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
+/**
+ * Plausible Analytics MCP Server - STDIO Entry Point
+ * For use with MCP clients like Claude Desktop, Cursor, Windsurf via STDIO transport.
+ * For VPS/HTTP deployment, use http-server.ts instead.
+ */
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [queryTool],
-  };
+import dotenv from 'dotenv';
+dotenv.config();
+
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { PlausibleClient } from './plausible-client.js';
+import { registerStatsTools } from './tools/stats.js';
+import { registerEventsTools } from './tools/events.js';
+import { registerSitesTools } from './tools/sites.js';
+
+// Configuration from environment variables
+const PLAUSIBLE_API_URL = process.env.PLAUSIBLE_API_URL || 'https://plausible.io';
+const PLAUSIBLE_API_KEY = process.env.PLAUSIBLE_API_KEY;
+
+if (!PLAUSIBLE_API_KEY) {
+  console.error('Error: PLAUSIBLE_API_KEY environment variable is required');
+  process.exit(1);
+}
+
+// Create Plausible API client
+const plausibleClient = new PlausibleClient({
+  apiUrl: PLAUSIBLE_API_URL,
+  apiKey: PLAUSIBLE_API_KEY,
 });
 
-server.setRequestHandler(
-  CallToolRequestSchema,
-  async (request: CallToolRequest) => {
-    try {
-      if (!request.params.arguments) {
-        throw new Error("Arguments are required");
-      }
+// Create MCP server
+const server = new McpServer({
+  name: 'Plausible Analytics MCP Server',
+  version: '1.0.0',
+});
 
-      switch (request.params.name) {
-        case "plausible_query": {
-          const args = request.params.arguments as unknown as QueryArgs;
-          if (!args.site_id || !args.metrics || !args.date_range) {
-            throw new Error(
-              "Missing required arguments: site_id, metrics, and date_range"
-            );
-          }
-          const response = await plausibleClient.query(
-            args.site_id,
-            args.metrics,
-            args.date_range
-          );
-          return {
-            content: [{ type: "text", text: JSON.stringify(response) }],
-          };
-        }
+// Client accessor for tools
+const getClient = () => plausibleClient;
 
-        default:
-          throw new Error(`Unknown tool: ${request.params.name}`);
-      }
-    } catch (error) {
-      console.error("Error executing tool:", error);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: error instanceof Error ? error.message : String(error),
-            }),
-          },
-        ],
-      };
-    }
+// Register all tools
+registerStatsTools(server, getClient);
+registerEventsTools(server, getClient);
+registerSitesTools(server, getClient);
+
+// Register hello tool for testing
+server.tool(
+  'hello',
+  'A simple test tool to verify that the Plausible Analytics MCP server is working correctly',
+  {},
+  async () => {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            message: 'Hello from Plausible Analytics MCP!',
+            timestamp: new Date().toISOString(),
+            apiUrl: PLAUSIBLE_API_URL,
+            transport: 'stdio',
+          }, null, 2),
+        },
+      ],
+    };
   }
 );
 
+// Start STDIO transport
 async function runServer() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Plausible MCP Server running on stdio");
+  console.error('Plausible Analytics MCP Server running on stdio');
+  console.error(`API URL: ${PLAUSIBLE_API_URL}`);
 }
 
 runServer().catch((error) => {
-  console.error("Fatal error in main():", error);
+  console.error('Fatal error in main():', error);
   process.exit(1);
 });

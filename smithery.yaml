@@ -4,14 +4,14 @@ startCommand:
     type: object
     required:
       - plausibleAPIKey
-      - plausibleAPIURL
     properties:
       plausibleAPIKey:
         type: string
-        description: The API Key of your Plausible account.
+        description: Your Plausible Analytics API key (Stats API key for read access, or Sites API key for management).
       plausibleAPIURL:
         type: string
-        description: The URL of your Plausible server, default to https://plausible.io/api/v2
+        description: The base URL of your Plausible instance. Defaults to https://plausible.io for Plausible Cloud.
+        default: https://plausible.io
   commandFunction:
     |-
-    (config) => ({ command: 'node', args: ['dist/index.js'], env: { PLAUSIBLE_API_URL: config.plausibleAPIURL, PLAUSIBLE_API_KEY: config.plausibleAPIKey } })
+    (config) => ({ command: 'node', args: ['dist/index.js'], env: { PLAUSIBLE_API_URL: config.plausibleAPIURL || 'https://plausible.io', PLAUSIBLE_API_KEY: config.plausibleAPIKey } })

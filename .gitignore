@@ -1,3 +1,9 @@
 dist
 node_modules
 .env
+.env.local
+.env.*
+!/.env.sample
+data/
+.credentials/
+*.log

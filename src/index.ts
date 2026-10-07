@@ -12,6 +12,7 @@
  *   writes / events      only when the connection allows writes
  */
 
+import { pathToFileURL } from 'url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { PlausibleConnection } from './config.js';
 import { registerCoreTools } from './tools/core.js';
@@ -47,4 +48,14 @@ export function createAppServer(
 
   registerAllTools(server, createToolContext(connection, options));
   return server;
+}
+
+// Backward compatibility: v1 ran `node dist/index.js` as the stdio entry point (with .env loading)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    process.loadEnvFile();
+  } catch {
+    // no .env in the working directory
+  }
+  void import('./cli.js');
 }

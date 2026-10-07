@@ -28,6 +28,7 @@ import {
   normalizeConnection,
 } from './config.js';
 import { createAppServer } from './index.js';
+import { configurePrivateAddressGuard } from './plausible/http.js';
 import { HttpError } from './utils/http-error.js';
 import {
   USER_KEY_PATTERN,
@@ -70,6 +71,9 @@ if (!MCP_API_KEY) {
   console.warn('MCP_API_KEY is not set. Self-hosted /mcp mode and /analytics access are disabled.');
 }
 
+// User-supplied instance URLs: refuse private addresses at connect time
+configurePrivateAddressGuard(true, ALLOW_PRIVATE_PLAUSIBLE_HOSTS);
+
 // =============================================================================
 // Utility functions
 // =============================================================================
@@ -91,9 +95,14 @@ function safeEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(left, right);
 }
 
+const KNOWN_ROUTES = new Set(['/', '/health', '/mcp', '/mcp-debug/open', '/.well-known/mcp/server-card.json']);
+
+/** Bounded route labels — unknown paths must not create new analytics keys */
 function normalizeRouteForAnalytics(req: Request): string {
   if (req.path.startsWith('/mcp/')) return '/mcp/:userKey';
-  return req.path;
+  if (KNOWN_ROUTES.has(req.path)) return req.path;
+  if (req.path.startsWith('/.well-known/')) return '/.well-known/*';
+  return 'other';
 }
 
 function traceHttp(req: Request, res: Response, details: Record<string, unknown> = {}): void {
@@ -136,7 +145,8 @@ function sendHttpError(res: Response, error: HttpError): void {
 // =============================================================================
 
 const analytics = new UsageAnalytics('mcp-plausibleanalytics', ANALYTICS_DIR);
-void analytics.load();
+// Load before serving: load() replaces the in-memory counters
+await analytics.load();
 analytics.start();
 
 function requireApiKey(req: Request, res: Response): boolean {
@@ -258,8 +268,9 @@ async function handleMcpRequest(req: Request, res: Response, authMode: AuthMode)
     throw new HttpError(405, 'method_not_allowed', 'Method not allowed. This stateless MCP endpoint only accepts POST.');
   }
 
-  // Some clients send only Accept: application/json — the SDK requires both
+  // The SDK requires both media types in Accept; clients that can't take SSE get plain JSON back
   const accept = req.headers.accept || '';
+  const acceptsEventStream = accept.includes('text/event-stream') || accept.includes('*/*');
   if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
     req.headers.accept = 'application/json, text/event-stream';
   }
@@ -283,7 +294,10 @@ async function handleMcpRequest(req: Request, res: Response, authMode: AuthMode)
     analytics.trackToolCall(req.body.params.name, req);
   }
 
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: !acceptsEventStream,
+  });
 
   // Idempotent cleanup — only on res.finish/res.close, not in finally
   let cleanedUp = false;

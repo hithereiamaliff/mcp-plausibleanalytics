@@ -9,7 +9,7 @@
  * they are reported by get_instance_info and used to enrich error hints.
  */
 
-import { isCloudUrl } from '../config.js';
+import { isCloudUrl, pruneExpired } from '../config.js';
 import { PlausibleClient } from './client.js';
 
 export type Version = [number, number, number];
@@ -132,6 +132,7 @@ export async function getInstanceProfile(
   const promise = buildProfile(client)
     .then(profile => {
       const ttl = profile.errors.length > 0 ? PROFILE_FAILURE_TTL_MS : PROFILE_TTL_MS;
+      pruneExpired(cache, 200);
       cache.set(key, { profile, expiresAt: Date.now() + ttl });
       return profile;
     })

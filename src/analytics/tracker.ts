@@ -29,9 +29,9 @@ function emptyAnalytics(): Analytics {
   };
 }
 
-// Firebase keys may not contain . # $ / [ ]
-function sanitizeKey(key: string): string {
-  return key.replace(/[.#$/[\]]/g, '_');
+// Firebase keys may not contain . # $ / [ ] or ASCII control characters (0-31, 127)
+export function sanitizeKey(key: string): string {
+  return key.replace(/[.#$/[\]\x00-\x1f\x7f]/g, '_');
 }
 
 function sanitizeObject(value: unknown): unknown {

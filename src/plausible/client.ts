@@ -3,7 +3,7 @@
  * Everything here is available on both self-hosted Community Edition and Plausible Cloud.
  */
 
-import { plausibleRequest } from './http.js';
+import { PlausibleApiError, plausibleRequest } from './http.js';
 
 export type DateRange = string | [string, string];
 
@@ -111,12 +111,17 @@ export class PlausibleClient {
     return data ?? {};
   }
 
+  /** /api/system/health/ready (CE ≥ 3.0), falling back to the older /api/health */
   async healthReady(): Promise<Record<string, unknown>> {
-    const { data } = await plausibleRequest<Record<string, unknown>>(this.baseUrl, '/api/system/health/ready', {
-      auth: { type: 'none' },
-      timeoutMs: 8000,
-    });
-    return data ?? {};
+    const options = { auth: { type: 'none' as const }, timeoutMs: 8000 };
+    try {
+      const { data } = await plausibleRequest<Record<string, unknown>>(this.baseUrl, '/api/system/health/ready', options);
+      return data ?? {};
+    } catch (error) {
+      if (!(error instanceof PlausibleApiError) || error.status !== 404) throw error;
+      const { data } = await plausibleRequest<Record<string, unknown>>(this.baseUrl, '/api/health', options);
+      return data ?? {};
+    }
   }
 
   async querySchema(): Promise<Record<string, unknown>> {

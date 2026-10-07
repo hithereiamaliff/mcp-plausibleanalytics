@@ -43,7 +43,8 @@ export function createToolContext(
 }
 
 export function pluginsClientFor(ctx: ToolContext, site: string): PluginsClient | undefined {
-  const token = ctx.connection.pluginTokens[site];
+  const tokens = ctx.connection.pluginTokens;
+  const token = Object.hasOwn(tokens, site) ? tokens[site] : undefined;
   return token ? new PluginsClient(ctx.connection.baseUrl, site, token) : undefined;
 }
 

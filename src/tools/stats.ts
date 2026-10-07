@@ -25,6 +25,7 @@ import {
   FILTER_OPERATORS,
   METRICS,
   type Metric,
+  SESSION_ONLY_DIMENSIONS,
   ToolInputError,
   buildFilters,
   comparisonRange,
@@ -32,8 +33,10 @@ import {
   dimensionLabel,
   filtersMention,
   isTimeDimension,
+  offsetOf,
   resolveDateRange,
   resolveDimension,
+  withOffsets,
 } from '../plausible/query-helpers.js';
 import {
   READ_ONLY,
@@ -137,9 +140,18 @@ async function runComparison(
   compare: CompareMode | { from: string; to: string },
   originalRange: DateRange,
 ): Promise<{ response: V2QueryResponse; range: [string, string] } | undefined> {
-  const range = typeof compare === 'object'
-    ? (resolveDateRange(compare) as [string, string])
-    : comparisonRange(current.query.date_range, compare, originalRange);
+  let range: [string, string] | undefined;
+  if (typeof compare === 'object') {
+    range = resolveDateRange(compare) as [string, string];
+  } else if (current.query?.date_range) {
+    range = comparisonRange(current.query.date_range, compare, originalRange);
+    // Wall-clock shifts of partial-day ranges reuse the current UTC offset; use the site's
+    // offsets on the comparison dates instead so DST changes don't skew the window.
+    const exactDuration = compare === 'previous_period' && (originalRange === '24h' || Array.isArray(originalRange));
+    if (range && range[0].length > 10 && !exactDuration) {
+      range = await withSiteOffsets(ctx, query.site_id, range);
+    }
+  }
   if (!range) return undefined;
 
   const { trim_relative_date_range: _trim, ...include } = query.include ?? {};
@@ -147,11 +159,24 @@ async function runComparison(
   return { response, range: response.query?.date_range ?? range };
 }
 
+/** Ask Plausible how the comparison dates resolve in the site timezone and take its offsets */
+async function withSiteOffsets(ctx: ToolContext, siteId: string, range: [string, string]): Promise<[string, string]> {
+  const probe = await ctx.stats.query({
+    site_id: siteId,
+    metrics: ['visitors'],
+    date_range: [range[0].slice(0, 10), range[1].slice(0, 10)],
+  });
+  const resolved = probe.query?.date_range;
+  return resolved ? withOffsets(range, offsetOf(resolved[0]), offsetOf(resolved[1])) : range;
+}
+
 function defaultBreakdownMetrics(dimensions: string[]): Metric[] {
   if (dimensions.some(isTimeDimension)) return ['visitors', 'pageviews'];
   if (dimensions.includes('event:goal')) return ['visitors', 'events', 'conversion_rate'];
   if (dimensions.some(d => d.startsWith('event:props:') || d === 'event:name')) return ['visitors', 'events'];
-  if (dimensions.every(d => d === 'event:page' || d === 'event:hostname')) return ['visitors', 'pageviews', 'bounce_rate'];
+  // Plausible only allows session metrics (bounce_rate) with event dimensions when they are exactly ["event:page"]
+  if (dimensions.length === 1 && dimensions[0] === 'event:page') return ['visitors', 'pageviews', 'bounce_rate'];
+  if (dimensions.every(d => d === 'event:page' || d === 'event:hostname')) return ['visitors', 'pageviews'];
   if (dimensions.every(d => d.startsWith('visit:'))) {
     return dimensions.some(d => d.includes('entry_page') || d.includes('exit_page'))
       ? ['visitors', 'visits', 'bounce_rate']
@@ -224,8 +249,14 @@ export function registerStatsTools(server: McpServer, ctx: ToolContext): void {
       ];
 
       const kpiQuery: V2Query = { ...base, metrics: kpiMetrics };
-      const [kpiResult, ...sectionResults] = await Promise.allSettled([
-        ctx.stats.query(kpiQuery),
+      const kpiPromise = ctx.stats.query(kpiQuery);
+      // The comparison only depends on the KPI result — run it alongside the section queries
+      const comparisonPromise = compare === 'none'
+        ? Promise.resolve(undefined)
+        : kpiPromise.then(current => runComparison(ctx, current, kpiQuery, compare, dateRange));
+      const [kpiResult, comparisonResult, ...sectionResults] = await Promise.allSettled([
+        kpiPromise,
+        comparisonPromise,
         ...sections.map(section =>
           ctx.stats.query({
             ...base,
@@ -239,15 +270,10 @@ export function registerStatsTools(server: McpServer, ctx: ToolContext): void {
       if (kpiResult.status === 'rejected') throw kpiResult.reason;
       const current = kpiResult.value;
 
-      let comparison: Awaited<ReturnType<typeof runComparison>>;
-      let comparisonError: string | undefined;
-      if (compare !== 'none') {
-        try {
-          comparison = await runComparison(ctx, current, kpiQuery, compare, dateRange);
-        } catch (error) {
-          comparisonError = error instanceof Error ? error.message : String(error);
-        }
-      }
+      const comparison = comparisonResult.status === 'fulfilled' ? comparisonResult.value : undefined;
+      const comparisonError = comparisonResult.status === 'rejected'
+        ? (comparisonResult.reason instanceof Error ? comparisonResult.reason.message : String(comparisonResult.reason))
+        : undefined;
 
       const kpis = kpiComparison(
         kpiMetrics,
@@ -481,12 +507,14 @@ export function registerStatsTools(server: McpServer, ctx: ToolContext): void {
         return jsonResult({ site_id: site, period: response.query?.date_range, dimensions, filters, rows, meta: response.meta });
       }
 
+      const shown = rows.slice(0, MAX_MARKDOWN_ROWS);
       return textResult([
         heading(`Breakdown by ${dimensions.map(dimensionLabel).join(' × ')}`, site),
         periodLine(response.query?.date_range),
         ...filterLine(filters),
         '',
-        markdownTable([...dimensions.map(dimensionLabel), ...metrics], rows, metrics),
+        markdownTable([...dimensions.map(dimensionLabel), ...metrics], shown, metrics),
+        ...(rows.length > shown.length ? [`\n_Showing the first ${shown.length} of ${rows.length} rows — use offset or format "json"._`] : []),
         ...metaNotes(response, rows.length, offset).map(note => `\n_${note}_`),
       ].join('\n'));
     }),
@@ -530,7 +558,8 @@ export function registerStatsTools(server: McpServer, ctx: ToolContext): void {
       const dimensions = breakdown ? (goals.length === 1 ? [breakdown] : ['event:goal', breakdown]) : ['event:goal'];
       const metrics = [
         'visitors',
-        'events',
+        // events is an event-only metric: Plausible rejects it with entry/exit page breakdowns
+        ...(breakdown && SESSION_ONLY_DIMENSIONS.has(breakdown) ? [] : ['events']),
         breakdown ? 'group_conversion_rate' : 'conversion_rate',
         ...(args.include_revenue ? ['total_revenue', 'average_revenue'] : []),
       ];

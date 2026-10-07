@@ -7,7 +7,19 @@
  * - uniform PlausibleApiError with the API's own error message
  */
 
+import { Agent, type Dispatcher, fetch } from 'undici';
+import { createGuardedLookup } from '../config.js';
 import { REPOSITORY_URL, SERVER_VERSION } from '../version.js';
+
+let guardedDispatcher: Dispatcher | undefined;
+
+/**
+ * HTTP server mode: validate every connection's resolved address (SSRF / DNS rebinding).
+ * CLI mode leaves this off so local and private instances keep working.
+ */
+export function configurePrivateAddressGuard(enabled: boolean, allowedHosts: string[] = []): void {
+  guardedDispatcher = enabled ? new Agent({ connect: { lookup: createGuardedLookup(allowedHosts) } }) : undefined;
+}
 
 export const DEFAULT_TIMEOUT_MS = parseInt(process.env.PLAUSIBLE_TIMEOUT_MS || '30000', 10);
 const MAX_429_RETRIES = 2;
@@ -30,7 +42,7 @@ export interface PlausibleRequestOptions {
 export interface PlausibleResponse<T> {
   status: number;
   data: T;
-  headers: Headers;
+  headers: { get(name: string): string | null };
 }
 
 export class PlausibleApiError extends Error {
@@ -95,7 +107,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function retryDelayMs(response: Response, attempt: number): number {
+function retryDelayMs(response: { headers: { get(name: string): string | null } }, attempt: number): number {
   const retryAfter = Number(response.headers.get('retry-after'));
   if (Number.isFinite(retryAfter) && retryAfter > 0 && retryAfter <= 10) return retryAfter * 1000;
   return 1000 * 2 ** attempt;
@@ -121,7 +133,7 @@ export async function plausibleRequest<T = unknown>(
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
 
   for (let attempt = 0; ; attempt++) {
-    let response: Response;
+    let response: Awaited<ReturnType<typeof fetch>>;
     try {
       response = await fetch(url, {
         method,
@@ -129,6 +141,7 @@ export async function plausibleRequest<T = unknown>(
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         redirect: 'manual',
         signal: AbortSignal.timeout(timeoutMs),
+        dispatcher: guardedDispatcher,
       });
     } catch (error) {
       const isTimeout = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
@@ -139,11 +152,14 @@ export async function plausibleRequest<T = unknown>(
     }
 
     if (response.status === 429 && attempt < MAX_429_RETRIES) {
+      // Release the connection before retrying
+      await response.body?.cancel().catch(() => {});
       await sleep(retryDelayMs(response, attempt));
       continue;
     }
 
     if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => {});
       const location = response.headers.get('location') || 'another URL';
       throw new PlausibleApiError(
         response.status,

@@ -62,6 +62,11 @@ export const VISIT_DIMENSIONS = [
 ];
 export const TIME_DIMENSIONS = ['time', 'time:hour', 'time:day', 'time:week', 'time:month'];
 
+/** Session-only dimensions: cannot be combined with event-only metrics (pageviews, events, …) */
+export const SESSION_ONLY_DIMENSIONS = new Set([
+  'visit:entry_page', 'visit:exit_page', 'visit:entry_page_hostname', 'visit:exit_page_hostname',
+]);
+
 /** Short, LLM-friendly names → Plausible dimension names */
 export const DIMENSION_ALIASES: Record<string, string> = {
   page: 'event:page',
@@ -107,7 +112,7 @@ export function resolveDimension(input: string): string {
   const value = input.trim();
   const lower = value.toLowerCase();
 
-  if (DIMENSION_ALIASES[lower]) return DIMENSION_ALIASES[lower];
+  if (Object.hasOwn(DIMENSION_ALIASES, lower)) return DIMENSION_ALIASES[lower];
 
   const prop = /^(?:prop|props|event:props):(.+)$/i.exec(value);
   if (prop) return `event:props:${prop[1].trim()}`;
@@ -120,7 +125,7 @@ export function resolveDimension(input: string): string {
 
 /** Column label for a dimension: short alias where one exists */
 export function dimensionLabel(dimension: string): string {
-  if (LABEL_OVERRIDES[dimension]) return LABEL_OVERRIDES[dimension];
+  if (Object.hasOwn(LABEL_OVERRIDES, dimension)) return LABEL_OVERRIDES[dimension];
   if (dimension.startsWith('event:props:')) return `prop:${dimension.slice('event:props:'.length)}`;
   return dimension;
 }
@@ -204,7 +209,7 @@ export function resolveDateRange(input: DateRangeInput | undefined, fallback: Da
 
   if (typeof input === 'string') {
     const value = input.trim().toLowerCase();
-    const normalized = SHORTHAND_ALIASES[value] ?? value;
+    const normalized = Object.hasOwn(SHORTHAND_ALIASES, value) ? SHORTHAND_ALIASES[value] : value;
     if (normalized === 'realtime') {
       throw new ToolInputError('There is no "realtime" date range in the Stats API — use get_realtime_visitors instead.');
     }
@@ -390,6 +395,20 @@ export function comparisonRange(
   // Day-based ranges: Nd shorthands and custom whole-day ranges
   const days = dayDiff(start, end) + 1;
   return output(shiftCalendar(start, 0, -days, false), shiftCalendar(end, 0, -days, false));
+}
+
+const OFFSET_SUFFIX = /(Z|[+-]\d{2}:\d{2})$/;
+
+/** UTC offset suffix of an ISO datetime ("+08:00", "Z"), if any */
+export function offsetOf(stamp: string): string | undefined {
+  return OFFSET_SUFFIX.exec(stamp)?.[1];
+}
+
+/** Replace the UTC offsets of a datetime range (used to apply the site's DST-correct offsets) */
+export function withOffsets(range: [string, string], startOffset?: string, endOffset?: string): [string, string] {
+  const swap = (stamp: string, offset?: string) =>
+    offset ? stamp.replace(OFFSET_SUFFIX, offset === 'Z' ? '+00:00' : offset) : stamp;
+  return [swap(range[0], startOffset), swap(range[1], endOffset)];
 }
 
 // =============================================================================

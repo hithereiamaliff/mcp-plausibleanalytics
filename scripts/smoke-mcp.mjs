@@ -80,6 +80,23 @@ function resolveRange(range) {
   return start.length === 10 ? [`${start}T00:00:00+08:00`, `${end}T23:59:59+08:00`] : [start, end];
 }
 
+// Plausible's session/event conflict rule (lib/plausible/stats/table_decider.ex)
+const SESSION_METRICS = ['bounce_rate', 'visit_duration', 'views_per_visit'];
+const EVENT_METRICS = ['pageviews', 'events', 'scroll_depth', 'time_on_page', 'total_revenue', 'average_revenue'];
+const SESSION_DIMENSIONS = ['visit:entry_page', 'visit:exit_page', 'visit:entry_page_hostname', 'visit:exit_page_hostname'];
+
+function conflictError(body) {
+  const dims = body.dimensions ?? [];
+  const eventDims = dims.filter(d => d.startsWith('event:'));
+  const sessionDims = dims.filter(d => SESSION_DIMENSIONS.includes(d));
+  const sessionMetrics = body.metrics.filter(m => SESSION_METRICS.includes(m));
+  const eventMetrics = body.metrics.filter(m => EVENT_METRICS.includes(m));
+  if (eventDims.length === 1 && eventDims[0] === 'event:page' && dims.length === 1) return undefined;
+  if (sessionMetrics.length && eventDims.length) return `Session metric(s) ${sessionMetrics} cannot be queried along with event dimension(s) ${eventDims}`;
+  if (eventMetrics.length && sessionDims.length) return `Event metric(s) ${eventMetrics} cannot be queried along with session dimension(s) ${sessionDims}`;
+  return undefined;
+}
+
 function fakeQuery(body) {
   const resolved = resolveRange(body.date_range);
   const previous = resolved[0].startsWith('2026-09');
@@ -118,8 +135,9 @@ const plausible = http.createServer(async (req, res) => {
   switch (`${req.method} ${url.pathname}`) {
     case 'GET /api/system':
       return json(res, 200, { build: { version: 'v3.2.1' }, geo_database: 'DBIP-Country-Lite' });
-    case 'GET /api/system/health/ready':
-      return json(res, 200, { postgres: 'ok', clickhouse: 'ok', sites_cache: 'ok' });
+    case 'GET /api/health':
+      // CE < 3.0 only serves the legacy health endpoint
+      return json(res, 200, { postgres: 'ok', clickhouse: 'ok' });
     case 'GET /api/docs/query/schema.json':
       return json(res, 200, {
         definitions: {
@@ -130,6 +148,7 @@ const plausible = http.createServer(async (req, res) => {
       });
     case 'POST /api/v2/query':
       if (!bearerOk) return json(res, 401, { error: 'Invalid API key or site ID.' });
+      if (conflictError(body)) return json(res, 400, { error: conflictError(body) });
       return json(res, 200, fakeQuery(body));
     case 'GET /api/v1/stats/realtime/visitors':
       if (!bearerOk) return json(res, 401, { error: 'Invalid API key or site ID.' });
@@ -293,6 +312,16 @@ try {
     assert.deepEqual(last.body.filters, [['is', 'visit:device', ['Mobile']]]);
   });
 
+  await check('default breakdown metrics respect session/event rules', async () => {
+    const hostname = await hosted.callTool({ name: 'get_breakdown', arguments: { dimension: 'hostname' } });
+    assert.ok(!hostname.isError, text(hostname));
+    const pageAndHost = await hosted.callTool({ name: 'get_breakdown', arguments: { dimension: ['page', 'hostname'] } });
+    assert.ok(!pageAndHost.isError, text(pageAndHost));
+    const landing = await hosted.callTool({ name: 'get_goal_conversions', arguments: { breakdown_by: 'entry_page' } });
+    assert.ok(!landing.isError, text(landing));
+    assert.match(text(landing), /group_conversion_rate/);
+  });
+
   await check('get_timeseries zero-fills empty buckets', async () => {
     const output = text(await hosted.callTool({ name: 'get_timeseries', arguments: { interval: 'day', format: 'json' } }));
     assert.equal(JSON.parse(output).rows.length, 7);
@@ -331,6 +360,7 @@ try {
     assert.match(output, /Community Edition v3\.2\.1/);
     assert.match(output, /example\.com: valid/);
     assert.match(output, /country level/);
+    assert.match(output, /Health: \{"postgres":"ok"/, 'falls back to /api/health');
   });
 
   await check('list_goals uses the Plugins API with Basic auth', async () => {
@@ -407,6 +437,25 @@ try {
   });
   await check('wrong X-API-Key → 403', async () => {
     assert.equal((await rawPost(`${mcpBase}/mcp`, { 'X-API-Key': 'wrong', 'X-Plausible-Api-Key': 'k' })).status, 403);
+  });
+  await check('JSON-only clients get a JSON response, SSE clients get SSE', async () => {
+    const call = accept => fetch(`${mcpBase}/mcp/${KEYS.readOnly}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: accept },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    const jsonOnly = await call('application/json');
+    assert.match(jsonOnly.headers.get('content-type'), /application\/json/);
+    assert.ok((await jsonOnly.json()).result.tools.length > 0);
+    const sse = await call('application/json, text/event-stream');
+    assert.match(sse.headers.get('content-type'), /text\/event-stream/);
+    await sse.text();
+  });
+  await check('unknown paths are bucketed in analytics', async () => {
+    await fetch(`${mcpBase}/wp-admin/${Math.random()}`);
+    const data = await (await fetch(`${mcpBase}/analytics`, { headers: { 'X-API-Key': ADMIN_KEY } })).json();
+    assert.ok(!Object.keys(data.breakdown.byEndpoint).some(key => key.startsWith('/wp-admin')));
+    assert.ok(data.breakdown.byEndpoint.other >= 1);
   });
   await check('GET on the stateless endpoint → 405', async () => {
     assert.equal((await rawPost(`${mcpBase}/mcp/${KEYS.readOnly}`, {}, 'GET')).status, 405);

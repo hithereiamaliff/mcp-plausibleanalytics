@@ -6,8 +6,9 @@
  * shape so the rest of the server never deals with raw input.
  */
 
+import dnsCallback from 'dns';
 import dns from 'dns/promises';
-import net from 'net';
+import net, { type LookupFunction } from 'net';
 
 export const DEFAULT_PLAUSIBLE_URL = 'https://plausible.io';
 
@@ -214,9 +215,47 @@ export function isPrivateAddress(address: string): boolean {
   return true;
 }
 
+/**
+ * net/tls `lookup` hook that refuses private addresses at connect time, so the address
+ * that was checked is the address actually connected to (no DNS-rebinding window).
+ * Node does not call `lookup` for IP literals — assertPublicPlausibleHost covers those.
+ */
+export function createGuardedLookup(allowedHosts: string[] = []): LookupFunction {
+  return (hostname, options, callback) => {
+    dnsCallback.lookup(hostname, { ...options, all: true }, (error, addresses) => {
+      if (error) {
+        callback(error, '', 4);
+        return;
+      }
+      if (!allowedHosts.includes(hostname.toLowerCase()) && addresses.some(({ address }) => isPrivateAddress(address))) {
+        const blocked = Object.assign(
+          new Error(`Plausible host "${hostname}" resolves to a private or internal address, which is not allowed on this server.`),
+          { code: 'EPRIVATEADDRESS' },
+        );
+        callback(blocked, '', 4);
+        return;
+      }
+      if (options.all) {
+        callback(null, addresses);
+      } else {
+        callback(null, addresses[0].address, addresses[0].family);
+      }
+    });
+  };
+}
+
 const HOST_CHECK_TTL_MS = 5 * 60_000;
 const HOST_CHECK_FAILURE_TTL_MS = 30_000;
+const HOST_CHECK_PRUNE_SIZE = 500;
 const hostChecks = new Map<string, { error?: string; expiresAt: number }>();
+
+export function pruneExpired<V extends { expiresAt: number }>(map: Map<string, V>, maxSize: number): void {
+  if (map.size < maxSize) return;
+  const now = Date.now();
+  for (const [key, entry] of map) {
+    if (now >= entry.expiresAt) map.delete(key);
+  }
+}
 
 /**
  * Reject instance URLs that resolve to loopback / private / link-local addresses,
@@ -247,6 +286,7 @@ export async function assertPublicPlausibleHost(baseUrl: string, allowedHosts: s
     error = `Plausible host "${hostname}" could not be resolved.`;
   }
 
+  pruneExpired(hostChecks, HOST_CHECK_PRUNE_SIZE);
   hostChecks.set(hostname, {
     error,
     expiresAt: Date.now() + (error ? HOST_CHECK_FAILURE_TTL_MS : HOST_CHECK_TTL_MS),

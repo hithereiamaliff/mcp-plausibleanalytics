@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
-import { PlausibleApiError, extractErrorMessage, plausibleRequest } from '../src/plausible/http.js';
+import { PlausibleApiError, configurePrivateAddressGuard, extractErrorMessage, plausibleRequest } from '../src/plausible/http.js';
 
 let server: http.Server;
 let baseUrl: string;
@@ -83,6 +83,28 @@ describe('plausibleRequest', () => {
     const { status, data } = await plausibleRequest(baseUrl, '/event', { method: 'POST', body: {}, auth: { type: 'none' } });
     assert.equal(status, 202);
     assert.equal(data, null);
+  });
+
+  it('releases the connection on retried 429s and redirects', async () => {
+    rateLimitHits = 0;
+    await plausibleRequest(baseUrl, '/rate-limited', { auth: { type: 'none' } });
+    await assert.rejects(plausibleRequest(baseUrl, '/redirect', { auth: { type: 'none' } }), PlausibleApiError);
+  });
+
+  it('blocks private addresses at connect time when the guard is enabled', async () => {
+    const port = new URL(baseUrl).port;
+    configurePrivateAddressGuard(true);
+    try {
+      await assert.rejects(
+        plausibleRequest(`http://localhost:${port}`, '/echo-auth', { auth: { type: 'none' } }),
+        (error: unknown) => error instanceof PlausibleApiError && error.status === 0 && /private or internal/.test(error.message),
+      );
+      configurePrivateAddressGuard(true, ['localhost']);
+      const { data } = await plausibleRequest<{ auth: string | null }>(`http://localhost:${port}`, '/echo-auth', { auth: { type: 'none' } });
+      assert.equal(data.auth, null);
+    } finally {
+      configurePrivateAddressGuard(false);
+    }
   });
 
   it('reports network failures as status 0', async () => {

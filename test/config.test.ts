@@ -4,6 +4,7 @@ import {
   ConnectionConfigError,
   DEFAULT_PLAUSIBLE_URL,
   assertPublicPlausibleHost,
+  createGuardedLookup,
   isPrivateAddress,
   normalizeBaseUrl,
   normalizeConnection,
@@ -110,5 +111,20 @@ describe('SSRF guard', () => {
 
   it('rejects hostnames that resolve to loopback', async () => {
     await assert.rejects(assertPublicPlausibleHost('http://localhost:8090'), ConnectionConfigError);
+  });
+
+  it('refuses private addresses at connect time unless allow-listed', async () => {
+    const lookup = (allowed: string[]) =>
+      new Promise<{ error: NodeJS.ErrnoException | null; address: unknown }>(resolve =>
+        createGuardedLookup(allowed)('localhost', {}, (error, address) => resolve({ error, address })),
+      );
+
+    const blocked = await lookup([]);
+    assert.match(String(blocked.error?.message), /private or internal/);
+    assert.equal(blocked.error?.code, 'EPRIVATEADDRESS');
+
+    const allowed = await lookup(['localhost']);
+    assert.equal(allowed.error, null);
+    assert.equal(typeof allowed.address, 'string');
   });
 });

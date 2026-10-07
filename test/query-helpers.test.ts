@@ -6,8 +6,10 @@ import {
   comparisonRange,
   computeChange,
   dimensionLabel,
+  offsetOf,
   resolveDateRange,
   resolveDimension,
+  withOffsets,
 } from '../src/plausible/query-helpers.js';
 
 describe('resolveDimension', () => {
@@ -23,6 +25,13 @@ describe('resolveDimension', () => {
 
   it('rejects unknown dimensions with guidance', () => {
     assert.throws(() => resolveDimension('pages'), (error: unknown) => error instanceof ToolInputError && /Aliases/.test(error.message));
+  });
+
+  it('does not resolve Object.prototype members', () => {
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      assert.throws(() => resolveDimension(name), ToolInputError, name);
+    }
+    assert.throws(() => resolveDateRange('constructor'), ToolInputError);
   });
 
   it('labels dimensions with their short alias', () => {
@@ -119,6 +128,22 @@ describe('comparisonRange', () => {
 
   it('returns undefined for "all"', () => {
     assert.equal(comparisonRange(day('2020-01-01', '2026-10-08'), 'previous_period', 'all'), undefined);
+  });
+});
+
+describe('offsets', () => {
+  it('reads and replaces datetime offsets', () => {
+    assert.equal(offsetOf('2026-10-01T00:00:00+02:00'), '+02:00');
+    assert.equal(offsetOf('2026-10-01T00:00:00Z'), 'Z');
+    assert.equal(offsetOf('2026-10-01'), undefined);
+    assert.deepEqual(
+      withOffsets(['2026-10-01T00:00:00+01:00', '2026-10-08T14:30:00+01:00'], '+02:00', '+02:00'),
+      ['2026-10-01T00:00:00+02:00', '2026-10-08T14:30:00+02:00'],
+    );
+    assert.deepEqual(withOffsets(['2026-10-01T00:00:00+01:00', '2026-10-08T14:30:00+01:00'], 'Z', undefined), [
+      '2026-10-01T00:00:00+00:00',
+      '2026-10-08T14:30:00+01:00',
+    ]);
   });
 });
 

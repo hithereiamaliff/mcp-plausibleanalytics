@@ -21,6 +21,7 @@
     "dev": "npm run dev:http",
     "dev:http": "tsx --env-file-if-exists=.env src/http-server.ts",
     "dev:cli": "tsx --env-file-if-exists=.env src/cli.ts",
+    "start": "node dist/cli.js",
     "start:http": "node dist/http-server.js",
     "cli": "node dist/cli.js",
     "test": "node --import tsx --test \"test/**/*.test.ts\"",
@@ -49,6 +50,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "firebase-admin": "^14.5.0",
+    "undici": "^7.30.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

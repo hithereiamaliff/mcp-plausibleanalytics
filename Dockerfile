@@ -1,53 +1,43 @@
 # Plausible Analytics MCP Server - Streamable HTTP
 # For self-hosting on VPS with nginx reverse proxy
 
-FROM node:20-alpine
+# ---- Build stage -------------------------------------------------------------
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
-COPY tsconfig.json ./
-
-# Install ALL dependencies (including devDependencies for build)
-# Skip prepare script since source files aren't copied yet
+COPY package*.json tsconfig.json ./
 RUN npm ci --ignore-scripts
 
-# Copy source code
 COPY src/ ./src/
+RUN npm run build
 
-# Build TypeScript
-RUN npm run build:tsc
+# ---- Runtime stage -----------------------------------------------------------
+FROM node:22-alpine
 
-# Remove devDependencies after build
-RUN npm prune --production
+WORKDIR /app
 
-# Create non-root user for security
+ENV NODE_ENV=production \
+    PORT=8080 \
+    HOST=0.0.0.0 \
+    ANALYTICS_DIR=/app/data
+
+COPY package*.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
+COPY --from=build /app/dist ./dist
+
+# Non-root user; data + credentials directories (credentials are mounted read-only)
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S mcp -u 1001
-
-# Create data directory for analytics
-RUN mkdir -p /app/data
-
-# Create credentials directory (will be mounted as volume)
-RUN mkdir -p /app/.credentials
-
-# Set ownership
-RUN chown -R mcp:nodejs /app
+    adduser -S mcp -u 1001 -G nodejs && \
+    mkdir -p /app/data /app/.credentials && \
+    chown -R mcp:nodejs /app
 
 USER mcp
 
-# Expose port for HTTP server
 EXPOSE 8080
 
-# Environment variables (can be overridden at runtime)
-ENV PORT=8080
-ENV HOST=0.0.0.0
-ENV ANALYTICS_DIR=/app/data
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
-
-# Start the HTTP server
 CMD ["node", "dist/http-server.js"]

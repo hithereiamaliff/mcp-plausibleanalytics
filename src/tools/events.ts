@@ -1,94 +1,76 @@
 /**
- * Plausible Analytics - Events API Tools
- * Provides tools for recording pageviews and custom events via the Events API
+ * Events API — send a pageview or custom event (write; opt-in only).
+ *
+ * Events are recorded as real traffic and cannot be removed through the API, so this tool
+ * is only registered when the connection allows writes, and is framed for testing goals
+ * and server-side tracking setups.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { PlausibleClient } from '../plausible-client.js';
+import { ToolInputError } from '../plausible/query-helpers.js';
+import { type ToolContext, WRITE, resolveSite, runTool, siteIdParam, textResult } from './shared.js';
 
-/**
- * Register all Events API tools on the given MCP server
- */
-export function registerEventsTools(server: McpServer, getClient: () => PlausibleClient): void {
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
-  // =========================================================================
-  // send_event - Record a custom event or pageview
-  // =========================================================================
-  server.tool(
+export function registerEventTools(server: McpServer, ctx: ToolContext): void {
+  server.registerTool(
     'send_event',
-    'Record a pageview or custom event via the Plausible Events API. Use name "pageview" for pageviews, or any other name for custom events. Useful for server-side tracking or mobile app analytics.',
     {
-      domain: z.string().describe('Domain of the site in Plausible (e.g. "example.com")'),
-      name: z.string().describe('Event name. Use "pageview" for pageviews, or any custom name for custom events (e.g. "Signup", "Purchase")'),
-      url: z.string().describe('URL where the event occurred (e.g. "https://example.com/pricing"). For mobile apps, use format like "app://localhost/screen-name"'),
-      referrer: z.string().optional().describe('Referrer URL for this event'),
-      props: z.record(z.string()).optional().describe('Custom properties as key-value pairs (max 30 pairs). Example: {"author": "John", "plan": "premium"}'),
-      revenue: z.object({
-        currency: z.string().describe('ISO 4217 currency code (e.g. "USD", "EUR")'),
-        amount: z.union([z.string(), z.number()]).describe('Revenue amount (e.g. 29.99 or "29.99")'),
-      }).optional().describe('Revenue data for revenue goal tracking'),
-      user_agent: z.string().optional().describe('User-Agent header for unique visitor counting. Required for accurate visitor tracking.'),
-      ip: z.string().optional().describe('Client IP address via X-Forwarded-For for unique visitor counting and geolocation.'),
+      title: 'Send event',
+      description:
+        'Record a pageview or custom event through the Plausible Events API — e.g. to test a new goal or server-side ' +
+        'tracking. WARNING: events are counted as real traffic and cannot be deleted; prefer a test site and only send ' +
+        'events the user explicitly asked for. Visitor uniqueness and location come from user_agent + ip; if ip is ' +
+        'omitted, this server\'s IP is used.',
+      inputSchema: {
+        site_id: siteIdParam,
+        name: z.string().max(120).optional().describe('"pageview" (default) or a custom event name, e.g. "Signup"'),
+        url: z.string().max(2000).describe('Page URL where the event happened, e.g. "https://example.com/pricing" (UTM tags are parsed)'),
+        referrer: z.string().optional().describe('Referrer URL'),
+        props: z.record(z.union([z.string(), z.number(), z.boolean()])).optional().describe('Custom properties (max 30), e.g. {"plan": "pro"}'),
+        revenue: z
+          .object({ currency: z.string().length(3), amount: z.union([z.string(), z.number()]) })
+          .optional()
+          .describe('Revenue for revenue goals (Plausible Cloud only), e.g. {"currency": "MYR", "amount": 49}'),
+        interactive: z.boolean().optional().describe('false = does not affect bounce rate (CE 3.1+)'),
+        user_agent: z.string().optional().describe('Visitor User-Agent (default: a desktop Chrome UA)'),
+        ip: z.string().optional().describe('Visitor IP for uniqueness and geolocation (sent as X-Forwarded-For)'),
+      },
+      annotations: WRITE,
     },
-    async (args) => {
+    async args => runTool(ctx, async () => {
+      const site = resolveSite(ctx, args.site_id);
+      if (args.props && Object.keys(args.props).length > 30) {
+        throw new ToolInputError('An event can have at most 30 custom properties.');
+      }
       try {
-        const client = getClient();
-        const result = await client.sendEvent({
-          domain: args.domain,
-          name: args.name,
+        new URL(args.url);
+      } catch {
+        throw new ToolInputError(`url must be an absolute URL, e.g. "https://${site}/pricing".`);
+      }
+
+      const name = args.name?.trim() || 'pageview';
+      const { status, dropped } = await ctx.stats.sendEvent(
+        {
+          domain: site,
+          name,
           url: args.url,
           referrer: args.referrer,
           props: args.props,
           revenue: args.revenue,
-          userAgent: args.user_agent,
-          ip: args.ip,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
-          isError: true,
-        };
-      }
-    }
-  );
+          interactive: args.interactive,
+        },
+        { userAgent: args.user_agent?.trim() || DEFAULT_USER_AGENT, ip: args.ip?.trim() || undefined },
+      );
 
-  // =========================================================================
-  // send_pageview - Simplified pageview recording
-  // =========================================================================
-  server.tool(
-    'send_pageview',
-    'Record a pageview event. A simplified wrapper around send_event specifically for tracking page visits.',
-    {
-      domain: z.string().describe('Domain of the site in Plausible (e.g. "example.com")'),
-      url: z.string().describe('Full URL of the page visited (e.g. "https://example.com/blog/post-1")'),
-      referrer: z.string().optional().describe('Referrer URL'),
-      user_agent: z.string().optional().describe('User-Agent for visitor identification'),
-      ip: z.string().optional().describe('Client IP for geolocation'),
-    },
-    async (args) => {
-      try {
-        const client = getClient();
-        const result = await client.sendEvent({
-          domain: args.domain,
-          name: 'pageview',
-          url: args.url,
-          referrer: args.referrer,
-          userAgent: args.user_agent,
-          ip: args.ip,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
-          isError: true,
-        };
+      if (dropped > 0) {
+        return textResult(
+          `Plausible accepted the request (HTTP ${status}) but dropped ${dropped} event(s) — usually bot filtering, ` +
+          'Shields (blocked IP/country/page/hostname) or an unknown domain. Check user_agent and ip.',
+        );
       }
-    }
+      return textResult(`Recorded "${name}" on ${site} for ${args.url} (HTTP ${status}). It appears in realtime stats within seconds.`);
+    }),
   );
 }

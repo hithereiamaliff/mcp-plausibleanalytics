@@ -1,5 +1,8 @@
 # Plausible Analytics MCP Server - Docker Compose
-# For self-hosting on VPS
+# For self-hosting on VPS at mcp.techmavie.digital/plausibleanalytics
+#
+# Requires the shared external network (created by mcp-key-service):
+#   docker network create mcp-network
 
 services:
   mcp-plausibleanalytics:
@@ -7,24 +10,31 @@ services:
     container_name: mcp-plausibleanalytics
     restart: unless-stopped
     ports:
-      - "8087:8080"
+      - "127.0.0.1:${HOST_PORT:-8096}:8080"
     environment:
       - PORT=8080
       - HOST=0.0.0.0
-      - ANALYTICS_DIR=/app/data
       - NODE_ENV=production
-      # Optional: Default Plausible credentials (users can provide their own via query params)
-      - PLAUSIBLE_API_URL=${PLAUSIBLE_API_URL:-https://plausible.io}
-      - PLAUSIBLE_API_KEY=${PLAUSIBLE_API_KEY:-}
+      - MCP_API_KEY=${MCP_API_KEY:-}
+      - KEY_SERVICE_URL=${KEY_SERVICE_URL:-}
+      - KEY_SERVICE_TOKEN=${KEY_SERVICE_TOKEN:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - PUBLIC_BASE_PATH=${PUBLIC_BASE_PATH:-/plausibleanalytics}
+      - ALLOW_PRIVATE_PLAUSIBLE_HOSTS=${ALLOW_PRIVATE_PLAUSIBLE_HOSTS:-}
+      - PLAUSIBLE_TIMEOUT_MS=${PLAUSIBLE_TIMEOUT_MS:-30000}
+      - MCP_TRACE_HTTP=${MCP_TRACE_HTTP:-false}
+      - ENABLE_MCP_DIAGNOSTICS=${ENABLE_MCP_DIAGNOSTICS:-false}
+      - ANALYTICS_DIR=/app/data
+      - FIREBASE_DATABASE_URL=${FIREBASE_DATABASE_URL:-}
     volumes:
       - analytics-data:/app/data
-      - firebase-credentials:/app/.credentials:ro
+      - ${FIREBASE_CREDENTIALS_DIR:-/opt/mcp-servers/.credentials}:/app/.credentials:ro
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 20s
     networks:
       - mcp-network
     logging:
@@ -35,10 +45,8 @@ services:
 
 networks:
   mcp-network:
-    driver: bridge
+    external: true
 
 volumes:
   analytics-data:
-    driver: local
-  firebase-credentials:
     driver: local

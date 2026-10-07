@@ -19,6 +19,7 @@ export interface Analytics {
   recentToolCalls: Array<{
     tool: string;
     timestamp: string;
+    /** sha256 prefix — raw IPs are never stored */
     clientIp: string;
     userAgent: string;
   }>;
@@ -43,9 +44,9 @@ export class FirebaseAnalytics {
     try {
       // Look for Firebase credentials
       const credentialPaths = [
+        process.env.FIREBASE_SERVICE_ACCOUNT_PATH || '',
         '/app/.credentials/firebase-service-account.json',
         path.join(process.cwd(), '.credentials', 'firebase-service-account.json'),
-        process.env.FIREBASE_SERVICE_ACCOUNT_PATH || '',
       ].filter(Boolean);
 
       let serviceAccount: ServiceAccount | null = null;

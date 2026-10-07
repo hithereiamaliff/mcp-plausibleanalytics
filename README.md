@@ -1,385 +1,255 @@
 # Plausible Analytics MCP Server
 
-MCP (Model Context Protocol) server for [Plausible Analytics](https://plausible.io/), providing comprehensive access to the Stats API v2, Events API, and Sites API.
+Model Context Protocol server for [Plausible Analytics](https://plausible.io/) — built first for **self-hosted Plausible Community Edition**, and fully compatible with Plausible Cloud.
+
+It ships with up to 26 tools across 5 categories (11 read-only tools on every connection) and supports:
+
+- hosted key-service mode with `usr_...` user keys ([MCP Key Service](https://mcpkeys.techmavie.digital))
+- self-hosted Streamable HTTP deployments
+- CLI/stdio usage for local MCP clients
 
 **MCP Endpoint:** `https://mcp.techmavie.digital/plausibleanalytics/mcp`
 
-**Analytics Dashboard:** [`https://mcp.techmavie.digital/plausibleanalytics/analytics/dashboard`](https://mcp.techmavie.digital/plausibleanalytics/analytics/dashboard)
+> Originally forked from [AVIMBU/plausible-mcp-server](https://github.com/AVIMBU/plausible-mcp-server); rebuilt in v2 by [@hithereiamaliff](https://github.com/hithereiamaliff).
 
-> This is a fork of the original [avimbu/plausible-model-context-protocol-server](https://github.com/avimbu/plausible-model-context-protocol-server), now maintained and significantly expanded by [@hithereiamaliff](https://github.com/hithereiamaliff).
+## Quick Start
 
-## Features
+### Option 1: Hosted key-service mode (recommended)
 
-- **Full Stats API v2 Coverage** - Query analytics with metrics, dimensions, filters, pagination, and time-series
-- **Events API** - Record pageviews and custom events for server-side tracking
-- **Sites API** - Manage sites, goals, shared links programmatically (Enterprise plan)
-- **Real-time Visitors** - Get current visitor count on any site
-- **Multi-Tenant Support** - Accepts Plausible API credentials via URL query parameters for shared deployments
-- **Modern Transport** - Streamable HTTP transport for VPS hosting, plus STDIO for local clients
-- **Firebase Analytics** - Cloud-based analytics storage with local file backup
-- **VPS Deployment Ready** - Docker, Nginx, and GitHub Actions auto-deployment support
-
-## Quick Start (Hosted Server)
-
-The easiest way to use this MCP server is via the hosted endpoint. **No installation required!**
-
-### MCP URL Format
-
-```
-https://mcp.techmavie.digital/plausibleanalytics/mcp?apiKey=YOUR_PLAUSIBLE_API_KEY
-```
-
-**Query Parameters:**
-
-| Parameter | Required | Description | Example |
-|-----------|----------|-------------|---------|
-| `apiKey` | Yes | Your Plausible API key | `plaus_xxx...` |
-| `apiUrl` | No | Plausible instance URL (default: `https://plausible.io`) | `https://plausible.example.com` |
-
-### Client Configuration
-
-For Claude Desktop / Cursor / Windsurf, add to your MCP configuration:
+1. Go to [mcpkeys.techmavie.digital](https://mcpkeys.techmavie.digital), choose **Plausible Analytics** and enter:
+   - **Plausible Instance URL** — your self-hosted URL (leave blank for Plausible Cloud)
+   - **Stats API Key** — Plausible → Account Settings → API Keys → New API Key
+   - **Site Domains** — e.g. `example.com, blog.example.com` (first = default site)
+   - *Optional* **Plugin Tokens** — `example.com=TOKEN` to enable goal / shared-link / custom-property tools
+   - *Optional* **Allow Write Tools** — `yes` to enable tools that change data
+2. Use the `usr_...` key you get back:
 
 ```json
 {
   "mcpServers": {
-    "plausible-analytics": {
+    "plausible": {
       "transport": "streamable-http",
-      "url": "https://mcp.techmavie.digital/plausibleanalytics/mcp?apiKey=YOUR_PLAUSIBLE_API_KEY"
+      "url": "https://mcp.techmavie.digital/plausibleanalytics/mcp/usr_YOUR_USER_KEY"
     }
   }
 }
 ```
 
-### STDIO Mode (Local)
+Compatibility query form:
 
-For local development with Claude Desktop:
+```text
+https://mcp.techmavie.digital/plausibleanalytics/mcp?api_key=usr_YOUR_USER_KEY
+```
+
+### Option 2: Self-hosted HTTP
+
+Header-based auth on `/mcp` (requires `MCP_API_KEY` on the server):
 
 ```json
 {
   "mcpServers": {
-    "plausible-analytics": {
+    "plausible": {
+      "transport": "streamable-http",
+      "url": "https://your-host/plausibleanalytics/mcp",
+      "headers": {
+        "X-API-Key": "YOUR_MCP_API_KEY",
+        "X-Plausible-Api-Key": "YOUR_PLAUSIBLE_STATS_API_KEY",
+        "X-Plausible-Url": "https://plausible.example.com",
+        "X-Plausible-Sites": "example.com, blog.example.com"
+      }
+    }
+  }
+}
+```
+
+Optional headers: `X-Plausible-Plugin-Tokens` (`example.com=TOKEN,...`) and `X-Plausible-Allow-Writes` (`yes`).
+
+### Option 3: CLI / stdio
+
+The package is not on npm yet — build from source:
+
+```bash
+git clone https://github.com/hithereiamaliff/mcp-plausibleanalytics.git
+cd mcp-plausibleanalytics && npm install && npm run build
+```
+
+```json
+{
+  "mcpServers": {
+    "plausible": {
       "command": "node",
-      "args": ["dist/index.js"],
+      "args": ["/path/to/mcp-plausibleanalytics/dist/cli.js"],
       "env": {
-        "PLAUSIBLE_API_URL": "https://plausible.io",
-        "PLAUSIBLE_API_KEY": "your_api_key"
+        "PLAUSIBLE_API_KEY": "your_stats_api_key",
+        "PLAUSIBLE_URL": "https://plausible.example.com",
+        "PLAUSIBLE_SITES": "example.com"
       }
     }
   }
 }
 ```
 
-Or use npx (no installation required):
+## Authentication Modes
 
-```json
-{
-  "mcpServers": {
-    "plausible-analytics": {
-      "command": "npx",
-      "args": ["-y", "mcp-plausibleanalytics"],
-      "env": {
-        "PLAUSIBLE_API_KEY": "your_api_key"
-      }
-    }
-  }
-}
-```
+| Mode | Endpoint | Client auth | Credentials from |
+|------|----------|-------------|------------------|
+| Hosted key-service | `/mcp/usr_...` | none | MCP Key Service (`plausible` connector) |
+| Hosted, query form | `/mcp?api_key=usr_...` | none | MCP Key Service |
+| Self-hosted HTTP | `/mcp` | `X-API-Key` | `X-Plausible-*` headers |
+| CLI / stdio | — | — | `PLAUSIBLE_*` environment variables |
 
-## Available Tools
+Raw Plausible keys in the URL (`?apiKey=`) are **not** accepted — they leak into proxy logs. The HTTP server never falls back to a key from its own environment.
 
-### Stats API v2
+## Self-hosted vs Cloud
 
-| Tool | Description |
-|------|-------------|
-| `query_stats` | Full Stats API v2 query with metrics, dimensions, filters, ordering, and pagination |
-| `get_realtime_visitors` | Get the current number of real-time visitors on a site |
-| `get_aggregate_stats` | Simplified aggregate statistics (visitors, pageviews, bounce rate, etc.) |
-| `get_timeseries` | Time-series data grouped by hour, day, week, or month |
-| `get_breakdown` | Breakdown by dimension (top pages, traffic sources, countries, browsers, devices) |
+Plausible Community Edition does **not** include the Sites API (it is Enterprise-only and not compiled into CE), so on self-hosted instances:
 
-### Events API
+- `list_sites` returns the site domains configured on the connection
+- goals, shared links, custom properties and tracker settings use the **Plugins API** with a per-site *Plugin Token*. Create one at `https://<your-plausible>/<site>/settings/integrations?new_token=MCP` (the token is shown once).
+- revenue metrics and the `24h` range are Cloud-only
+
+Most stats features need **CE 3.0+** (`scroll_depth`, `time_on_page`, behavioral filters, `28d`/`91d` ranges); `get_instance_info` reports what your instance supports. CE v3.0.0–v3.2.0 are affected by CVE-2026-8467 — run v3.2.1 or newer.
+
+## Tool Categories
+
+Tools are registered per connection, so clients only see what the credentials can do.
+
+### Core (3) — always
 
 | Tool | Description |
 |------|-------------|
-| `send_event` | Record a custom event or pageview via the Events API |
-| `send_pageview` | Simplified pageview recording |
+| `hello` | Connectivity check and connection summary |
+| `get_instance_info` | Version, edition, health, API-key and plugin-token checks, supported metrics / ranges |
+| `list_sites` | Sites API on Cloud; configured site domains on self-hosted |
 
-### Sites API (Enterprise)
-
-| Tool | Description |
-|------|-------------|
-| `list_sites` | List all sites in your Plausible account |
-| `get_site` | Get site details and tracker configuration |
-| `create_site` | Create a new site |
-| `update_site` | Update site settings (e.g., change domain) |
-| `delete_site` | Permanently delete a site and all its data |
-| `create_shared_link` | Find or create a shared link for embedding dashboards |
-| `list_goals` | List goals configured for a site |
-| `create_goal` | Find or create a goal (custom event or page visit) |
-| `delete_goal` | Delete a goal |
-
-### Utility
+### Stats (8) — always, read-only
 
 | Tool | Description |
 |------|-------------|
-| `hello` | Test tool to verify the MCP server is working |
-| `check_plausible_health` | Check if the Plausible API is healthy and accessible |
+| `get_site_overview` | One-call dashboard: KPIs vs previous period, top pages, sources, countries, devices, goals |
+| `get_aggregate_stats` | Totals for a range, optional previous-period / year-over-year comparison |
+| `get_timeseries` | Metrics per hour / day / week / month, zero-filled |
+| `get_breakdown` | Top values of any dimension (aliases like `page`, `source`, `country`, `prop:author`) |
+| `get_goal_conversions` | Conversions and conversion rate per goal, optional breakdown |
+| `compare_periods` | Two periods side by side, totals or per dimension value, with % / pp change |
+| `get_realtime_visitors` | Current visitors plus last-N-minutes top pages and sources |
+| `query_stats` | Raw Stats API v2 query (nested filters, segments, behavioral filters, pagination) |
+
+### Management (up to 9) — Plugin Token (self-hosted) or Plausible Cloud
+
+| Tool | Write? | Description |
+|------|--------|-------------|
+| `list_goals` | | Goals with IDs |
+| `list_shared_links` | | Shared dashboard links (Plugin Token only) |
+| `get_tracker_config` | | Tracker script options (CE 3.1+) |
+| `create_goal` | ✏️ | Event or pageview goal (idempotent) |
+| `delete_goal` | ⚠️ | Requires `confirm: true` |
+| `create_shared_link` | ✏️ | Optional password (idempotent) |
+| `enable_custom_property` | ✏️ | Allow-list custom property keys |
+| `disable_custom_property` | ⚠️ | Requires `confirm: true` |
+| `update_tracker_config` | ✏️ | Outbound links, file downloads, forms, hash routing |
+
+### Cloud site admin (up to 5) — plausible.io only
+
+`get_site`, `list_custom_properties`, and with writes enabled `create_site`, `update_site`, `delete_site` (⚠️ `confirm: true`). Writes need a Sites API key (Enterprise).
+
+### Events (1) — writes enabled
+
+`send_event` — record a pageview or custom event (e.g. to test a goal). Events count as real traffic and cannot be deleted.
+
+✏️ / ⚠️ tools are only registered when the connection allows writes. All tools carry MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`).
 
 ## Usage Examples
 
-### Get a Site Overview
+- "How is example.com doing this month compared with last month?" → `get_site_overview` / `get_aggregate_stats`
+- "Top 20 blog pages in the last 28 days with scroll depth" → `get_breakdown` with `page` + `contains /blog`
+- "Which sources drive Signup conversions?" → `get_goal_conversions` with `breakdown_by: "source"`
+- "Compare countries this quarter vs the same quarter last year" → `compare_periods` with `year_over_year`
+- "How many people are on the site right now?" → `get_realtime_visitors`
 
-Ask your AI assistant:
-> "Give me a summary of my analytics for example.com over the last 30 days"
+## Endpoints
 
-The AI will use `get_aggregate_stats` with `date_range: "30d"`.
+| Endpoint | Auth | Description |
+|----------|------|-------------|
+| `/` | — | Server info |
+| `/health` | — | Health check |
+| `/.well-known/mcp/server-card.json` | — | MCP server card |
+| `/mcp/:userKey` | usr_ key | Hosted key-service mode |
+| `/mcp` | `?api_key=` or headers | Hosted query form / self-hosted mode (POST only — stateless) |
+| `/analytics`, `/analytics/tools` | `X-API-Key` | Usage JSON (IPs hashed, user keys never recorded) |
+| `/analytics/import` | `X-API-Key` | Merge backup totals |
+| `/analytics/dashboard` | key prompt | Usage dashboard |
+| `/mcp-debug/open` | — | Diagnostics server, only with `ENABLE_MCP_DIAGNOSTICS=true` |
 
-### Top Pages
+## Environment Variables
 
-> "What are the most visited pages on example.com this month?"
-
-Uses `get_breakdown` with `dimension: "event:page"`.
-
-### Traffic Sources
-
-> "Where is my traffic coming from for example.com?"
-
-Uses `get_breakdown` with `dimension: "visit:source"`.
-
-### Real-time Visitors
-
-> "How many people are on example.com right now?"
-
-Uses `get_realtime_visitors`.
-
-### Time-series Trends
-
-> "Show me daily visitor trends for example.com over the last 7 days"
-
-Uses `get_timeseries` with `interval: "day"` and `date_range: "7d"`.
-
-### Track a Custom Event
-
-> "Record a Signup event for example.com from https://example.com/register"
-
-Uses `send_event` with `name: "Signup"`.
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Required | Description | Default |
-|----------|----------|-------------|---------|
-| `PLAUSIBLE_API_KEY` | Yes | Your Plausible API key | - |
-| `PLAUSIBLE_API_URL` | No | Plausible instance URL | `https://plausible.io` |
-| `PORT` | No | HTTP server port | `8080` |
-| `HOST` | No | HTTP server host | `0.0.0.0` |
-
-### API Keys
-
-Plausible offers two types of API keys:
-
-- **Stats API key** - For querying analytics data (Stats API tools). Available on all plans.
-- **Sites API key** - For managing sites, goals, shared links (Sites API tools). Available on Enterprise plans.
-
-Create your API key at: Plausible Dashboard > Settings > API Keys
-
-## Self-Hosted (VPS) Deployment
-
-### Architecture
-
-```
-Client (Claude, Cursor, Windsurf, etc.)
-    ↓ HTTPS
-https://mcp.techmavie.digital/plausibleanalytics/mcp
-    ↓
-Nginx (SSL termination + reverse proxy)
-    ↓ HTTP
-Docker Container (port 8087 → 8080)
-    ↓
-MCP Server (Streamable HTTP Transport)
-    ↓
-Plausible Analytics API
-```
-
-### Quick Deploy
-
-```bash
-# On your VPS
-cd /opt/mcp-servers
-git clone https://github.com/hithereiamaliff/mcp-plausibleanalytics.git plausibleanalytics
-cd plausibleanalytics
-
-# Optional: Create .env with default API key
-echo "PLAUSIBLE_API_KEY=your_key_here" > .env
-
-# Build and start
-docker compose up -d --build
-
-# Check logs
-docker compose logs -f
-```
-
-### Deployment Files
-
-| File | Description |
-|------|-------------|
-| `Dockerfile` | Container config with Node.js 20-alpine |
-| `docker-compose.yml` | Docker orchestration with analytics volumes |
-| `deploy/nginx-mcp.conf` | Nginx reverse proxy location block |
-| `.github/workflows/deploy-vps.yml` | GitHub Actions auto-deployment |
-
-### Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Server info |
-| `/health` | GET | Health check |
-| `/mcp` | POST | MCP endpoint (JSON-RPC) |
-| `/analytics` | GET | Analytics JSON data |
-| `/analytics/dashboard` | GET | Visual analytics dashboard (HTML) |
-| `/analytics/tools` | GET | Tool usage statistics |
-| `/analytics/import` | POST | Import backup analytics data |
-
-### Auto-Deployment
-
-Push to `main` branch triggers automatic deployment via GitHub Actions. Required secrets:
-
-- `VPS_HOST` - VPS IP address
-- `VPS_USERNAME` - SSH username
-- `VPS_SSH_KEY` - Private SSH key
-- `VPS_PORT` - SSH port
-
-## Firebase Analytics
-
-Cloud-based analytics persistence with local file backup as fallback.
-
-### Setup
-
-1. Create a Firebase project at [Firebase Console](https://console.firebase.google.com/)
-2. Enable Realtime Database
-3. Generate service account credentials
-4. Copy credentials to VPS:
-
-```bash
-mkdir -p /opt/mcp-servers/plausibleanalytics/.credentials
-# Copy firebase-service-account.json to this directory
-```
-
-### Data Structure
-
-```
-mcp-analytics/
-  └── mcp-plausibleanalytics/
-      ├── serverStartTime
-      ├── totalRequests
-      ├── totalToolCalls
-      ├── requestsByMethod
-      ├── requestsByEndpoint
-      ├── toolCalls
-      ├── recentToolCalls
-      ├── clientsByIp
-      ├── clientsByUserAgent
-      ├── hourlyRequests
-      └── lastUpdated
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` / `HOST` | `8080` / `0.0.0.0` | Listen address |
+| `MCP_API_KEY` | — | Enables self-hosted `/mcp` mode and analytics endpoints |
+| `KEY_SERVICE_URL` | — | Full resolve URL, e.g. `http://mcp-key-service:8090/internal/resolve` |
+| `KEY_SERVICE_TOKEN` | — | This server's token (`plausible:<token>` in the key service) |
+| `PUBLIC_BASE_PATH` | — | Public prefix, e.g. `/plausibleanalytics` |
+| `ALLOWED_ORIGINS` | `*` | CORS allowlist |
+| `ALLOW_PRIVATE_PLAUSIBLE_HOSTS` | — | Hostnames exempt from the private-IP block |
+| `PLAUSIBLE_TIMEOUT_MS` | `30000` | Upstream request timeout |
+| `MCP_TRACE_HTTP` / `ENABLE_MCP_DIAGNOSTICS` | `false` | Debug aids |
+| `ANALYTICS_DIR` | `/app/data` | Local analytics JSON |
+| `FIREBASE_SERVICE_ACCOUNT_PATH` / `FIREBASE_DATABASE_URL` | `/app/.credentials/...` / derived | Optional Firebase analytics |
+| `PLAUSIBLE_API_KEY`, `PLAUSIBLE_URL`, `PLAUSIBLE_SITES`, `PLAUSIBLE_PLUGIN_TOKENS`, `PLAUSIBLE_ALLOW_WRITES` | — | CLI / stdio only |
 
 ## Local Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Run STDIO server in development mode
-npm run dev
-
-# Run HTTP server in development mode
-npm run dev:http
-
-# Build for production
-npm run build
-
-# Start production STDIO server
-npm start
-
-# Start production HTTP server
-npm run start:http
-
-# Test health endpoint
-curl http://localhost:8080/health
-
-# Test MCP endpoint
-curl -X POST http://localhost:8080/mcp?apiKey=YOUR_KEY \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+cp .env.sample .env          # fill in values
+npm run dev:http             # HTTP server with tsx
+npm run dev:cli              # stdio server with tsx
+npm run typecheck
+npm test                     # unit tests (node:test)
+npm run smoke                # end-to-end test against fake Plausible + key service
+npm run live-check           # read-only checks against your real instance (.env)
 ```
 
 ## Project Structure
 
 ```
-mcp-plausibleanalytics/
-├── src/
-│   ├── index.ts              # STDIO entry point (Smithery/local)
-│   ├── http-server.ts        # HTTP server (VPS deployment)
-│   ├── plausible-client.ts   # Plausible API client
-│   ├── firebase-analytics.ts # Firebase analytics module
-│   └── tools/
-│       ├── stats.ts          # Stats API v2 tools
-│       ├── events.ts         # Events API tools
-│       └── sites.ts          # Sites API tools
-├── deploy/
-│   └── nginx-mcp.conf        # Nginx reverse proxy config
-├── .github/
-│   └── workflows/
-│       └── deploy-vps.yml    # Auto-deployment workflow
-├── Dockerfile                # Container config
-├── docker-compose.yml        # Docker orchestration
-├── package.json
-├── tsconfig.json
-├── smithery.yaml             # Smithery platform config
-└── README.md
+src/
+├── cli.ts                    # stdio entry (bin)
+├── http-server.ts            # Express app, auth modes, per-request servers
+├── index.ts                  # createAppServer + per-connection tool registration
+├── config.ts                 # connection normalisation + SSRF guard
+├── version.ts
+├── plausible/
+│   ├── http.ts               # fetch wrapper: timeouts, 429 retry, no redirects
+│   ├── client.ts             # Stats v2 / v1 realtime / Events / system endpoints
+│   ├── plugins-client.ts     # Plugins API (self-hosted management)
+│   ├── sites-client.ts       # Sites API (Cloud)
+│   ├── profile.ts            # instance version / schema detection
+│   ├── query-helpers.ts      # aliases, filters, date ranges, comparisons
+│   └── format.ts             # named rows, markdown tables, error hints
+├── tools/                    # core, stats, management, sites, events
+├── utils/                    # key-service resolver, HttpError, masking
+└── analytics/                # usage tracker, Firebase persistence, dashboard
+test/                         # unit tests
+scripts/                      # smoke-mcp.mjs, live-check.mjs
+deploy/                       # DEPLOYMENT.md, nginx-mcp.conf
 ```
 
-## Troubleshooting
+## Security Notes
 
-### Connection Issues
+- Read-only by default; write tools appear only when the connection opts in, and destructive tools also need `confirm: true`.
+- Instance URLs resolving to private / loopback / link-local addresses are rejected and redirects are never followed, so a user-supplied URL cannot reach internal services.
+- Self-hosted mode fails closed without `MCP_API_KEY`; keys are compared in constant time.
+- Analytics store hashed IPs only; `usr_` keys and Plausible keys are never logged (masked in traces).
 
-```bash
-# Test health endpoint
-curl https://mcp.techmavie.digital/plausibleanalytics/health
+## Deployment
 
-# Test MCP endpoint (list tools)
-curl -X POST "https://mcp.techmavie.digital/plausibleanalytics/mcp?apiKey=YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-```
-
-### Common Errors
-
-| Error | Cause | Solution |
-|-------|-------|----------|
-| Missing API key | No `apiKey` parameter provided | Add `?apiKey=YOUR_KEY` to the MCP URL |
-| 401 Unauthorized | Invalid API key | Check your key at Plausible Dashboard > Settings > API Keys |
-| 402 Payment Required | Sites API on non-Enterprise plan | Sites API tools require Enterprise plan |
-| 429 Too Many Requests | Rate limit exceeded (600/hour) | Reduce request frequency |
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Create a pull request
+See [deploy/DEPLOYMENT.md](deploy/DEPLOYMENT.md). Pushes to `main` deploy to the VPS via GitHub Actions.
 
 ## License
 
 [MIT](./LICENSE)
-
-## Acknowledgments
-
-- [Plausible Analytics](https://plausible.io/) for the privacy-friendly analytics platform
-- [AVIMBU](https://avimbu.com/) for the original MCP server implementation
-- [Model Context Protocol](https://modelcontextprotocol.io/) for the MCP framework
 
 ---
 

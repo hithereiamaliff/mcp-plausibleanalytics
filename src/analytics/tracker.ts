@@ -29,17 +29,34 @@ function emptyAnalytics(): Analytics {
   };
 }
 
-// Firebase keys may not contain . # $ / [ ] or ASCII control characters (0-31, 127)
-export function sanitizeKey(key: string): string {
-  return key.replace(/[.#$/[\]\x00-\x1f\x7f]/g, '_');
+const FIREBASE_TIMEOUT_MS = 10_000;
+
+// Firebase keys may not contain . # $ / [ ] or ASCII control characters (0-31, 127).
+// Percent-encode them (and %) reversibly, so keys loaded back from Firebase match the
+// in-memory keys exactly instead of colliding with them.
+export function encodeFirebaseKey(key: string): string {
+  return key.replace(/[%.#$/[\]\x00-\x1f\x7f]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`);
 }
 
-function sanitizeObject(value: unknown): unknown {
+export function decodeFirebaseKey(key: string): string {
+  return key.replace(/%([0-9A-F]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function mapKeys(value: unknown, transform: (key: string) => string): unknown {
   if (typeof value !== 'object' || value === null) return value;
-  if (Array.isArray(value)) return value.map(sanitizeObject);
+  if (Array.isArray(value)) return value.map(item => mapKeys(item, transform));
   return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, inner]) => [sanitizeKey(key), sanitizeObject(inner)]),
+    Object.entries(value as Record<string, unknown>).map(([key, inner]) => [transform(key), mapKeys(inner, transform)]),
   );
+}
+
+function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${FIREBASE_TIMEOUT_MS / 1000}s`)), FIREBASE_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function sortedEntries(record: Record<string, number>, limit?: number): Record<string, number> {
@@ -67,15 +84,20 @@ export class UsageAnalytics {
   }
 
   async load(): Promise<void> {
-    try {
-      if (this.firebase.isInitialized()) {
-        const remote = await this.firebase.loadAnalytics();
+    if (this.firebase.isInitialized()) {
+      try {
+        // RTDB reads wait indefinitely while the database is unreachable — never block startup on them
+        const remote = await withTimeout(this.firebase.loadAnalytics(), 'Firebase analytics load');
         if (remote) {
-          this.data = { ...emptyAnalytics(), ...remote };
+          this.data = { ...emptyAnalytics(), ...(mapKeys(remote, decodeFirebaseKey) as Analytics) };
           console.log(`📊 Loaded analytics from Firebase (${this.data.totalRequests} requests, ${this.data.totalToolCalls} tool calls)`);
           return;
         }
+      } catch (error) {
+        console.error('⚠️ Firebase analytics load failed, falling back to the local file:', error instanceof Error ? error.message : error);
       }
+    }
+    try {
       if (fs.existsSync(this.file)) {
         this.data = { ...emptyAnalytics(), ...JSON.parse(fs.readFileSync(this.file, 'utf-8')) as Analytics };
         console.log(`📊 Loaded analytics from ${this.file}`);
@@ -89,13 +111,17 @@ export class UsageAnalytics {
 
   async save(): Promise<void> {
     try {
-      if (this.firebase.isInitialized()) {
-        await this.firebase.saveAnalytics(sanitizeObject(this.data) as Analytics);
-      }
       fs.mkdirSync(this.dataDir, { recursive: true });
       fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
     } catch (error) {
-      console.error('⚠️ Failed to save analytics:', error);
+      console.error('⚠️ Failed to save analytics locally:', error);
+    }
+    if (this.firebase.isInitialized()) {
+      try {
+        await withTimeout(this.firebase.saveAnalytics(mapKeys(this.data, encodeFirebaseKey) as Analytics), 'Firebase analytics save');
+      } catch (error) {
+        console.error('⚠️ Failed to save analytics to Firebase:', error instanceof Error ? error.message : error);
+      }
     }
   }
 

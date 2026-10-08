@@ -30,6 +30,7 @@ const KEYS = {
   writes: `usr_${'c'.repeat(32)}`,
   privateUrl: `usr_${'d'.repeat(32)}`,
   uncached: `usr_${'e'.repeat(32)}`,
+  mismatchedToken: `usr_${'f'.repeat(32)}`,
 };
 
 let passed = 0;
@@ -65,6 +66,7 @@ function json(res, status, body, headers = {}) {
 // =============================================================================
 
 const plausibleRequests = [];
+let legacyHealthOnly = false;
 
 const DIMENSION_VALUES = {
   'event:page': ['/', '/blog', '/pricing'],
@@ -130,13 +132,18 @@ const plausible = http.createServer(async (req, res) => {
   plausibleRequests.push({ method: req.method, path: url.pathname, body, auth: req.headers.authorization });
 
   const bearerOk = req.headers.authorization === `Bearer ${PLAUSIBLE_KEY}`;
-  const basicOk = req.headers.authorization === `Basic ${Buffer.from(`example.com:${PLUGIN_TOKEN}`).toString('base64')}`;
+  // Like real Plausible, the Basic-auth username is ignored: the token alone selects its site (example.com)
+  const basicToken = Buffer.from((req.headers.authorization ?? '').replace(/^Basic /, ''), 'base64').toString().split(':').pop();
+  const basicOk = req.headers.authorization?.startsWith('Basic ') && basicToken === PLUGIN_TOKEN;
 
   switch (`${req.method} ${url.pathname}`) {
     case 'GET /api/system':
       return json(res, 200, { build: { version: 'v3.2.1' }, geo_database: 'DBIP-Country-Lite' });
+    case 'GET /api/system/health/ready':
+      // CE ≥ 3.0 readiness endpoint; legacyHealthOnly simulates CE < 3.0
+      if (legacyHealthOnly) return res.writeHead(404, { 'Content-Type': 'text/html' }).end('<html>Not Found</html>');
+      return json(res, 200, { postgres: 'ok', clickhouse: 'ok', sites_cache: 'ok' });
     case 'GET /api/health':
-      // CE < 3.0 only serves the legacy health endpoint
       return json(res, 200, { postgres: 'ok', clickhouse: 'ok' });
     case 'GET /api/docs/query/schema.json':
       return json(res, 200, {
@@ -194,6 +201,8 @@ const keyService = http.createServer(async (req, res) => {
     [KEYS.writes]: { plausible_url: plausibleUrl, plausible_api_key: PLAUSIBLE_KEY, plausible_sites: 'example.com', plausible_plugin_tokens: `example.com=${PLUGIN_TOKEN}`, plausible_allow_writes: 'yes' },
     [KEYS.privateUrl]: { plausible_url: 'http://10.0.0.1:8000', plausible_api_key: PLAUSIBLE_KEY },
     [KEYS.uncached]: { plausible_url: plausibleUrl, plausible_api_key: PLAUSIBLE_KEY },
+    // example.com's token mapped to another site — must not be used for shop.example.com
+    [KEYS.mismatchedToken]: { plausible_url: plausibleUrl, plausible_api_key: PLAUSIBLE_KEY, plausible_sites: 'shop.example.com', plausible_plugin_tokens: `shop.example.com=${PLUGIN_TOKEN}`, plausible_allow_writes: 'yes' },
   }[body.key];
 
   if (!credentials) return json(res, 401, { valid: false, error: 'Invalid, revoked, or suspended API key, or server not authorized' });
@@ -320,6 +329,10 @@ try {
     const landing = await hosted.callTool({ name: 'get_goal_conversions', arguments: { breakdown_by: 'entry_page' } });
     assert.ok(!landing.isError, text(landing));
     assert.match(text(landing), /group_conversion_rate/);
+    for (const dimension of [['time:day', 'entry_page'], ['goal', 'exit_page'], ['prop:author', 'entry_page']]) {
+      const mixed = await hosted.callTool({ name: 'get_breakdown', arguments: { dimension } });
+      assert.ok(!mixed.isError, `${dimension}: ${text(mixed)}`);
+    }
   });
 
   await check('get_timeseries zero-fills empty buckets', async () => {
@@ -360,7 +373,17 @@ try {
     assert.match(output, /Community Edition v3\.2\.1/);
     assert.match(output, /example\.com: valid/);
     assert.match(output, /country level/);
-    assert.match(output, /Health: \{"postgres":"ok"/, 'falls back to /api/health');
+    assert.match(output, /Health: \{"postgres":"ok","clickhouse":"ok","sites_cache":"ok"\}/, 'uses /api/system/health/ready');
+  });
+
+  await check('health falls back to /api/health on CE < 3.0', async () => {
+    legacyHealthOnly = true;
+    try {
+      const output = text(await hosted.callTool({ name: 'get_instance_info', arguments: {} }));
+      assert.match(output, /Health: \{"postgres":"ok","clickhouse":"ok"\}/);
+    } finally {
+      legacyHealthOnly = false;
+    }
   });
 
   await check('list_goals uses the Plugins API with Basic auth', async () => {
@@ -372,6 +395,17 @@ try {
     const result = await hosted.callTool({ name: 'list_goals', arguments: { site_id: 'blog.example.com' } });
     assert.equal(result.isError, true);
     assert.match(text(result), /new_token=MCP/);
+  });
+
+  await check('a plugin token belonging to another site is refused, not used', async () => {
+    const client = await connect(`${mcpBase}/mcp/${KEYS.mismatchedToken}`);
+    const before = plausibleRequests.filter(r => r.method === 'DELETE').length;
+    const result = await client.callTool({ name: 'delete_goal', arguments: { goal_id: 1, confirm: true } });
+    assert.equal(result.isError, true);
+    assert.match(text(result), /belongs to example\.com/);
+    assert.equal(plausibleRequests.filter(r => r.method === 'DELETE').length, before, 'no DELETE may reach Plausible');
+    assert.match(text(await client.callTool({ name: 'get_instance_info', arguments: {} })), /shop\.example\.com: MISMATCH — token belongs to example\.com/);
+    await client.close();
   });
 
   await check('tool input errors come back as isError results', async () => {
@@ -450,6 +484,18 @@ try {
     const sse = await call('application/json, text/event-stream');
     assert.match(sse.headers.get('content-type'), /text\/event-stream/);
     await sse.text();
+  });
+  await check('tool calls inside JSON-RPC batches are counted', async () => {
+    const totals = async () => (await (await fetch(`${mcpBase}/analytics`, { headers: { 'X-API-Key': ADMIN_KEY } })).json()).summary.totalToolCalls;
+    const before = await totals();
+    const call = id => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'hello', arguments: {} } });
+    const res = await fetch(`${mcpBase}/mcp/${KEYS.readOnly}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      body: JSON.stringify([call(1), call(2)]),
+    });
+    await res.text();
+    assert.equal((await totals()) - before, 2);
   });
   await check('unknown paths are bucketed in analytics', async () => {
     await fetch(`${mcpBase}/wp-admin/${Math.random()}`);

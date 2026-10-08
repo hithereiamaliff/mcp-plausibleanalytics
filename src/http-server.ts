@@ -290,8 +290,13 @@ async function handleMcpRequest(req: Request, res: Response, authMode: AuthMode)
     server = createAppServer(connection, { transport: 'streamable-http', authMode });
   }
 
-  if (req.body?.method === 'tools/call' && typeof req.body?.params?.name === 'string') {
-    analytics.trackToolCall(req.body.params.name, req);
+  // A POST body may be a single JSON-RPC message or a batch array
+  const messages: unknown[] = Array.isArray(req.body) ? req.body : [req.body];
+  for (const message of messages) {
+    const rpc = message as { method?: unknown; params?: { name?: unknown } } | undefined;
+    if (rpc?.method === 'tools/call' && typeof rpc.params?.name === 'string') {
+      analytics.trackToolCall(rpc.params.name, req);
+    }
   }
 
   const transport = new StreamableHTTPServerTransport({

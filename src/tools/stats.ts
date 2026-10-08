@@ -25,10 +25,10 @@ import {
   FILTER_OPERATORS,
   METRICS,
   type Metric,
-  SESSION_ONLY_DIMENSIONS,
   ToolInputError,
   buildFilters,
   comparisonRange,
+  compatibleMetrics,
   computeChange,
   dimensionLabel,
   filtersMention,
@@ -171,18 +171,13 @@ async function withSiteOffsets(ctx: ToolContext, siteId: string, range: [string,
 }
 
 function defaultBreakdownMetrics(dimensions: string[]): Metric[] {
-  if (dimensions.some(isTimeDimension)) return ['visitors', 'pageviews'];
-  if (dimensions.includes('event:goal')) return ['visitors', 'events', 'conversion_rate'];
-  if (dimensions.some(d => d.startsWith('event:props:') || d === 'event:name')) return ['visitors', 'events'];
-  // Plausible only allows session metrics (bounce_rate) with event dimensions when they are exactly ["event:page"]
-  if (dimensions.length === 1 && dimensions[0] === 'event:page') return ['visitors', 'pageviews', 'bounce_rate'];
-  if (dimensions.every(d => d === 'event:page' || d === 'event:hostname')) return ['visitors', 'pageviews'];
-  if (dimensions.every(d => d.startsWith('visit:'))) {
-    return dimensions.some(d => d.includes('entry_page') || d.includes('exit_page'))
-      ? ['visitors', 'visits', 'bounce_rate']
-      : ['visitors', 'visits', 'bounce_rate', 'visit_duration'];
-  }
-  return ['visitors'];
+  let metrics: Metric[] = ['visitors'];
+  if (dimensions.some(isTimeDimension)) metrics = ['visitors', 'pageviews'];
+  else if (dimensions.includes('event:goal')) metrics = ['visitors', 'events', 'conversion_rate'];
+  else if (dimensions.some(d => d.startsWith('event:props:') || d === 'event:name')) metrics = ['visitors', 'events'];
+  else if (dimensions.every(d => d === 'event:page' || d === 'event:hostname')) metrics = ['visitors', 'pageviews', 'bounce_rate'];
+  else if (dimensions.every(d => d.startsWith('visit:'))) metrics = ['visitors', 'visits', 'bounce_rate', 'visit_duration'];
+  return compatibleMetrics(metrics, dimensions);
 }
 
 /** Map aliases inside raw v2 filter trees (["is", "country", [...]] → "visit:country_name") */
@@ -515,7 +510,7 @@ export function registerStatsTools(server: McpServer, ctx: ToolContext): void {
         '',
         markdownTable([...dimensions.map(dimensionLabel), ...metrics], shown, metrics),
         ...(rows.length > shown.length ? [`\n_Showing the first ${shown.length} of ${rows.length} rows — use offset or format "json"._`] : []),
-        ...metaNotes(response, rows.length, offset).map(note => `\n_${note}_`),
+        ...metaNotes(response, shown.length, offset).map(note => `\n_${note}_`),
       ].join('\n'));
     }),
   );
@@ -556,13 +551,14 @@ export function registerStatsTools(server: McpServer, ctx: ToolContext): void {
 
       const breakdown = args.breakdown_by ? resolveDimension(args.breakdown_by) : undefined;
       const dimensions = breakdown ? (goals.length === 1 ? [breakdown] : ['event:goal', breakdown]) : ['event:goal'];
-      const metrics = [
+      // Event-only metrics (events, revenue) are dropped for entry/exit page breakdowns, which Plausible rejects
+      const metrics = compatibleMetrics([
         'visitors',
-        // events is an event-only metric: Plausible rejects it with entry/exit page breakdowns
-        ...(breakdown && SESSION_ONLY_DIMENSIONS.has(breakdown) ? [] : ['events']),
+        'events',
         breakdown ? 'group_conversion_rate' : 'conversion_rate',
         ...(args.include_revenue ? ['total_revenue', 'average_revenue'] : []),
-      ];
+      ], dimensions);
+      const droppedRevenue = Boolean(args.include_revenue) && !metrics.includes('total_revenue');
 
       const response = await ctx.stats.query({
         site_id: site,
@@ -589,6 +585,7 @@ export function registerStatsTools(server: McpServer, ctx: ToolContext): void {
           : '_No conversions in this period. Goals must be configured in Plausible (Site Settings → Goals) before conversions are counted._',
         '',
         '_visitors = unique converting visitors · events = total conversions_',
+        ...(droppedRevenue ? ['\n_Revenue and total conversions are not available with an entry/exit page breakdown._'] : []),
         ...metaNotes(response, rows.length).map(note => `\n_${note}_`),
       ].join('\n'));
     }),
@@ -890,7 +887,7 @@ export function registerStatsTools(server: McpServer, ctx: ToolContext): void {
         '',
         markdownTable([...dimensions.map(dimensionLabel), ...metrics], shown, metrics),
         ...(rows.length > shown.length ? [`\n_Showing the first ${shown.length} of ${rows.length} rows — use pagination or format "json"._`] : []),
-        ...metaNotes(response, rows.length, args.pagination?.offset ?? 0).map(note => `\n_${note}_`),
+        ...metaNotes(response, shown.length, args.pagination?.offset ?? 0).map(note => `\n_${note}_`),
       ].join('\n'));
     }),
   );

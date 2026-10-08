@@ -109,8 +109,9 @@ describe('SSRF guard', () => {
     await assertPublicPlausibleHost('https://1.1.1.1');
   });
 
-  it('rejects hostnames that resolve to loopback', async () => {
-    await assert.rejects(assertPublicPlausibleHost('http://localhost:8090'), ConnectionConfigError);
+  it('defers hostnames to the connect-time guard (no DNS failures at session level)', async () => {
+    await assertPublicPlausibleHost('http://localhost:8090');
+    await assertPublicPlausibleHost('https://does-not-exist.invalid');
   });
 
   it('refuses private addresses at connect time unless allow-listed', async () => {

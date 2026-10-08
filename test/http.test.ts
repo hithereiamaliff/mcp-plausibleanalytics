@@ -7,10 +7,37 @@ import { PlausibleApiError, configurePrivateAddressGuard, extractErrorMessage, p
 let server: http.Server;
 let baseUrl: string;
 let rateLimitHits = 0;
+let bigRateLimitHits = 0;
+let bigBodyAbortedEarly: boolean | undefined;
 
 before(async () => {
   server = http.createServer((req, res) => {
-    if (req.url === '/redirect') {
+    if (req.url === '/big-rate-limited') {
+      bigRateLimitHits++;
+      if (bigRateLimitHits === 1) {
+        // Stream an effectively endless body with backpressure: an unread body keeps the socket
+        // busy forever, so the response only closes early if the client cancels it
+        res.on('close', () => {
+          bigBodyAbortedEarly = !res.writableFinished;
+        });
+        res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '1' });
+        const chunk = Buffer.alloc(64 * 1024, 'x');
+        let written = 0;
+        const pump = () => {
+          while (written < 1024 * 1024 * 1024) {
+            written += chunk.length;
+            if (!res.write(chunk)) {
+              res.once('drain', pump);
+              return;
+            }
+          }
+          res.end();
+        };
+        pump();
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}');
+      }
+    } else if (req.url === '/redirect') {
       res.writeHead(301, { Location: 'https://elsewhere.example.com/' }).end();
     } else if (req.url === '/rate-limited') {
       rateLimitHits++;
@@ -85,10 +112,11 @@ describe('plausibleRequest', () => {
     assert.equal(data, null);
   });
 
-  it('releases the connection on retried 429s and redirects', async () => {
-    rateLimitHits = 0;
-    await plausibleRequest(baseUrl, '/rate-limited', { auth: { type: 'none' } });
-    await assert.rejects(plausibleRequest(baseUrl, '/redirect', { auth: { type: 'none' } }), PlausibleApiError);
+  it('cancels the 429 body (releasing the connection) before retrying', async () => {
+    const { data } = await plausibleRequest<{ ok: boolean }>(baseUrl, '/big-rate-limited', { auth: { type: 'none' } });
+    assert.deepEqual(data, { ok: true });
+    assert.equal(bigRateLimitHits, 2);
+    assert.equal(bigBodyAbortedEarly, true, 'the unread 429 body should have been cancelled, closing the response early');
   });
 
   it('blocks private addresses at connect time when the guard is enabled', async () => {

@@ -21,7 +21,8 @@ export function configurePrivateAddressGuard(enabled: boolean, allowedHosts: str
   guardedDispatcher = enabled ? new Agent({ connect: { lookup: createGuardedLookup(allowedHosts) } }) : undefined;
 }
 
-export const DEFAULT_TIMEOUT_MS = parseInt(process.env.PLAUSIBLE_TIMEOUT_MS || '30000', 10);
+const configuredTimeout = Number(process.env.PLAUSIBLE_TIMEOUT_MS);
+export const DEFAULT_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 30_000;
 const MAX_429_RETRIES = 2;
 const USER_AGENT = `mcp-plausibleanalytics/${SERVER_VERSION} (+${REPOSITORY_URL})`;
 

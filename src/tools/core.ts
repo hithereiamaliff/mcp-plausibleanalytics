@@ -14,6 +14,7 @@ import {
   formatParam,
   hasManagementBackend,
   jsonResult,
+  pluginTokenSite,
   pluginsClientFor,
   runTool,
   textResult,
@@ -83,14 +84,16 @@ export function registerCoreTools(server: McpServer, ctx: ToolContext): void {
         ctx.connection.defaultSite
           ? ctx.stats.query({ site_id: ctx.connection.defaultSite, metrics: ['visitors'], date_range: 'day' })
           : Promise.reject(new Error('no default site configured')),
-        ...Object.keys(ctx.connection.pluginTokens).slice(0, 10).map(site => pluginsClientFor(ctx, site)!.capabilities()),
+        ...Object.keys(ctx.connection.pluginTokens).slice(0, 10).map(site => pluginTokenSite(ctx, site, pluginsClientFor(ctx, site)!)),
       ]);
 
       const pluginSites = Object.keys(ctx.connection.pluginTokens).slice(0, 10);
       const plugin_tokens = Object.fromEntries(pluginSites.map((site, index) => {
         const check = tokenChecks[index];
         if (check.status === 'rejected') return [site, `error: ${describeError(ctx, check.reason)}`];
-        return [site, check.value.authorized ? 'valid' : 'rejected'];
+        const domain = check.value as string | null;
+        if (!domain) return [site, 'rejected'];
+        return [site, domain === site ? 'valid' : `MISMATCH — token belongs to ${domain}`];
       }));
 
       const notes: string[] = [];

@@ -4,6 +4,7 @@ import {
   ToolInputError,
   buildFilters,
   comparisonRange,
+  compatibleMetrics,
   computeChange,
   dimensionLabel,
   offsetOf,
@@ -128,6 +129,18 @@ describe('comparisonRange', () => {
 
   it('returns undefined for "all"', () => {
     assert.equal(comparisonRange(day('2020-01-01', '2026-10-08'), 'previous_period', 'all'), undefined);
+  });
+});
+
+describe('compatibleMetrics', () => {
+  it('mirrors Plausible\'s session/event conflict rule', () => {
+    assert.deepEqual(compatibleMetrics(['visitors', 'pageviews', 'bounce_rate'], ['event:page']), ['visitors', 'pageviews', 'bounce_rate']);
+    assert.deepEqual(compatibleMetrics(['visitors', 'pageviews', 'bounce_rate'], ['event:hostname']), ['visitors', 'pageviews']);
+    assert.deepEqual(compatibleMetrics(['visitors', 'pageviews'], ['time:day', 'visit:entry_page']), ['visitors']);
+    assert.deepEqual(compatibleMetrics(['visitors', 'events', 'conversion_rate'], ['event:goal', 'visit:exit_page']), ['visitors', 'conversion_rate']);
+    assert.deepEqual(compatibleMetrics(['visitors', 'total_revenue'], ['visit:entry_page']), ['visitors']);
+    assert.deepEqual(compatibleMetrics(['bounce_rate'], ['event:goal']), ['visitors']);
+    assert.deepEqual(compatibleMetrics(['visitors', 'bounce_rate', 'visit_duration'], ['visit:source']), ['visitors', 'bounce_rate', 'visit_duration']);
   });
 });
 

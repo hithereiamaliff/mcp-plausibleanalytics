@@ -67,6 +67,27 @@ export const SESSION_ONLY_DIMENSIONS = new Set([
   'visit:entry_page', 'visit:exit_page', 'visit:entry_page_hostname', 'visit:exit_page_hostname',
 ]);
 
+const SESSION_ONLY_METRICS = new Set(['bounce_rate', 'visit_duration', 'views_per_visit']);
+const EVENT_ONLY_METRICS = new Set(['pageviews', 'events', 'scroll_depth', 'time_on_page', 'total_revenue', 'average_revenue']);
+
+/**
+ * Drop metrics Plausible would reject for these dimensions (mirrors
+ * validate_no_metrics_dimensions_conflict in lib/plausible/stats/table_decider.ex):
+ * session metrics need no event dimensions (except exactly ["event:page"]), and
+ * event metrics need no session-only dimensions.
+ */
+export function compatibleMetrics<T extends string>(metrics: T[], dimensions: string[]): T[] {
+  const eventDimensions = dimensions.filter(dimension => dimension.startsWith('event:'));
+  if (eventDimensions.length === 1 && eventDimensions[0] === 'event:page') return metrics;
+
+  const hasSessionOnlyDimension = dimensions.some(dimension => SESSION_ONLY_DIMENSIONS.has(dimension));
+  const compatible = metrics.filter(metric =>
+    !(SESSION_ONLY_METRICS.has(metric) && eventDimensions.length > 0) &&
+    !(EVENT_ONLY_METRICS.has(metric) && hasSessionOnlyDimension),
+  );
+  return compatible.length > 0 ? compatible : (['visitors'] as T[]);
+}
+
 /** Short, LLM-friendly names → Plausible dimension names */
 export const DIMENSION_ALIASES: Record<string, string> = {
   page: 'event:page',

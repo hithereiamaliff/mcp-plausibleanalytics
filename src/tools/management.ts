@@ -20,7 +20,7 @@ import {
   WRITE_IDEMPOTENT,
   formatParam,
   jsonResult,
-  pluginsClientFor,
+  verifiedPluginsClient,
   requireConfirmation,
   resolveSite,
   runTool,
@@ -32,8 +32,8 @@ type Backend =
   | { kind: 'plugins'; client: PluginsClient }
   | { kind: 'sites'; client: SitesClient };
 
-function backendFor(ctx: ToolContext, site: string): Backend {
-  const plugins = pluginsClientFor(ctx, site);
+async function backendFor(ctx: ToolContext, site: string): Promise<Backend> {
+  const plugins = await verifiedPluginsClient(ctx, site);
   if (plugins) return { kind: 'plugins', client: plugins };
   if (ctx.sites) return { kind: 'sites', client: ctx.sites };
   throw new ToolInputError(
@@ -87,7 +87,7 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
     },
     async args => runTool(ctx, async () => {
       const site = resolveSite(ctx, args.site_id);
-      const backend = backendFor(ctx, site);
+      const backend = await backendFor(ctx, site);
       const limit = args.limit ?? 100;
 
       let rows: Row[];
@@ -131,7 +131,7 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
       },
       async args => runTool(ctx, async () => {
         const site = resolveSite(ctx, args.site_id);
-        const client = pluginsOnly(backendFor(ctx, site), 'Listing shared links');
+        const client = pluginsOnly(await backendFor(ctx, site), 'Listing shared links');
         const result = await client.listSharedLinks({ limit: 100 });
         const rows = result.shared_links.map(({ shared_link }) => ({
           id: shared_link.id,
@@ -163,7 +163,7 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
     },
     async args => runTool(ctx, async () => {
       const site = resolveSite(ctx, args.site_id);
-      const backend = backendFor(ctx, site);
+      const backend = await backendFor(ctx, site);
       const config = backend.kind === 'plugins'
         ? (await backend.client.getTrackerConfig()).tracker_script_configuration
         : (await backend.client.getSite(site)).tracker_script_configuration ?? {};
@@ -200,7 +200,7 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
     },
     async args => runTool(ctx, async () => {
       const site = resolveSite(ctx, args.site_id);
-      const backend = backendFor(ctx, site);
+      const backend = await backendFor(ctx, site);
       const eventName = args.event_name?.trim();
       const pagePath = args.page_path?.trim();
       if (args.goal_type === 'event' && !eventName) throw new ToolInputError('event_name is required for event goals.');
@@ -250,7 +250,7 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
     async args => runTool(ctx, async () => {
       requireConfirmation(args.confirm, 'Deleting a goal');
       const site = resolveSite(ctx, args.site_id);
-      const backend = backendFor(ctx, site);
+      const backend = await backendFor(ctx, site);
       if (backend.kind === 'plugins') {
         await backend.client.deleteGoal(args.goal_id);
       } else {
@@ -279,7 +279,7 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
     },
     async args => runTool(ctx, async () => {
       const site = resolveSite(ctx, args.site_id);
-      const backend = backendFor(ctx, site);
+      const backend = await backendFor(ctx, site);
       if (backend.kind === 'plugins') {
         const { shared_link } = await backend.client.createSharedLink(args.name, args.password);
         return textResult(`Shared link "${shared_link.name}" for ${site}${shared_link.password_protected ? ' (password protected)' : ''}:\n${shared_link.href}`);
@@ -310,7 +310,7 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
     },
     async args => runTool(ctx, async () => {
       const site = resolveSite(ctx, args.site_id);
-      const backend = backendFor(ctx, site);
+      const backend = await backendFor(ctx, site);
       if (backend.kind === 'plugins') {
         await backend.client.enableCustomProps(args.properties);
       } else {
@@ -337,7 +337,7 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
     async args => runTool(ctx, async () => {
       requireConfirmation(args.confirm, 'Disabling custom properties');
       const site = resolveSite(ctx, args.site_id);
-      const backend = backendFor(ctx, site);
+      const backend = await backendFor(ctx, site);
       if (backend.kind === 'plugins') {
         await backend.client.disableCustomProps(args.properties);
       } else {
@@ -369,7 +369,7 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
     },
     async args => runTool(ctx, async () => {
       const site = resolveSite(ctx, args.site_id);
-      const backend = backendFor(ctx, site);
+      const backend = await backendFor(ctx, site);
       const { site_id: _site, ...changes } = args;
       const updates = Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined));
       if (Object.keys(updates).length === 0) throw new ToolInputError('Pass at least one option to change.');
@@ -378,7 +378,12 @@ export function registerManagementTools(server: McpServer, ctx: ToolContext): vo
         // installation_type is required by the Plugins API — keep the current one if not given
         const current = (await backend.client.getTrackerConfig()).tracker_script_configuration;
         const { id: _id, ...currentOptions } = current;
-        const result = await backend.client.updateTrackerConfig({ ...currentOptions, ...updates });
+        const result = await backend.client.updateTrackerConfig({
+          ...currentOptions,
+          ...updates,
+          // Sites that never chose an installation type report null, which the PUT rejects
+          installation_type: args.installation_type ?? currentOptions.installation_type ?? 'manual',
+        });
         return jsonResult({ site_id: site, tracker_script_configuration: result.tracker_script_configuration });
       }
 

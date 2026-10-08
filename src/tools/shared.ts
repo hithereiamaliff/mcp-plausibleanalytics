@@ -5,7 +5,7 @@
 
 import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { ConnectionConfigError, normalizeSiteDomain, type PlausibleConnection } from '../config.js';
+import { ConnectionConfigError, normalizeSiteDomain, type PlausibleConnection, pruneExpired } from '../config.js';
 import { PlausibleClient } from '../plausible/client.js';
 import { hintForError } from '../plausible/format.js';
 import { PlausibleApiError } from '../plausible/http.js';
@@ -20,6 +20,7 @@ import {
   ToolInputError,
 } from '../plausible/query-helpers.js';
 import { SitesClient } from '../plausible/sites-client.js';
+import { shortHash } from '../utils/mask.js';
 
 export interface ToolContext {
   connection: PlausibleConnection;
@@ -46,6 +47,41 @@ export function pluginsClientFor(ctx: ToolContext, site: string): PluginsClient 
   const tokens = ctx.connection.pluginTokens;
   const token = Object.hasOwn(tokens, site) ? tokens[site] : undefined;
   return token ? new PluginsClient(ctx.connection.baseUrl, site, token) : undefined;
+}
+
+const PLUGIN_TOKEN_TTL_MS = 10 * 60_000;
+const pluginTokenSites = new Map<string, { domain: string | null; expiresAt: number }>();
+
+/** Site a plugin token actually belongs to (null = rejected), cached per token */
+export async function pluginTokenSite(ctx: ToolContext, site: string, client: PluginsClient): Promise<string | null> {
+  const key = `${ctx.connection.baseUrl}|${site}|${shortHash(ctx.connection.pluginTokens[site])}`;
+  const cached = pluginTokenSites.get(key);
+  if (cached && Date.now() < cached.expiresAt) return cached.domain;
+
+  const { authorized, data_domain } = await client.capabilities();
+  const domain = authorized && data_domain ? normalizeSiteDomain(data_domain) : null;
+  pruneExpired(pluginTokenSites, 500);
+  pluginTokenSites.set(key, { domain, expiresAt: Date.now() + PLUGIN_TOKEN_TTL_MS });
+  return domain;
+}
+
+/**
+ * Plugins API client verified to belong to `site`. The Plugins API ignores the Basic-auth
+ * username and always acts on the token's own site, so a mis-mapped token must not be used.
+ */
+export async function verifiedPluginsClient(ctx: ToolContext, site: string): Promise<PluginsClient | undefined> {
+  const client = pluginsClientFor(ctx, site);
+  if (!client) return undefined;
+
+  const domain = await pluginTokenSite(ctx, site, client);
+  if (domain !== site) {
+    throw new ToolInputError(
+      domain
+        ? `The plugin token configured for ${site} belongs to ${domain}, so it would change ${domain} instead. Fix the "${site}=TOKEN" entry on the connection.`
+        : `The plugin token configured for ${site} was rejected by Plausible. Create a new one under Site Settings → Integrations → Plugin Tokens.`,
+    );
+  }
+  return client;
 }
 
 export function hasManagementBackend(ctx: ToolContext): boolean {

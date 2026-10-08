@@ -6,8 +6,7 @@
  * shape so the rest of the server never deals with raw input.
  */
 
-import dnsCallback from 'dns';
-import dns from 'dns/promises';
+import dns from 'dns';
 import net, { type LookupFunction } from 'net';
 
 export const DEFAULT_PLAUSIBLE_URL = 'https://plausible.io';
@@ -222,7 +221,7 @@ export function isPrivateAddress(address: string): boolean {
  */
 export function createGuardedLookup(allowedHosts: string[] = []): LookupFunction {
   return (hostname, options, callback) => {
-    dnsCallback.lookup(hostname, { ...options, all: true }, (error, addresses) => {
+    dns.lookup(hostname, { ...options, all: true }, (error, addresses) => {
       if (error) {
         callback(error, '', 4);
         return;
@@ -244,11 +243,7 @@ export function createGuardedLookup(allowedHosts: string[] = []): LookupFunction
   };
 }
 
-const HOST_CHECK_TTL_MS = 5 * 60_000;
-const HOST_CHECK_FAILURE_TTL_MS = 30_000;
-const HOST_CHECK_PRUNE_SIZE = 500;
-const hostChecks = new Map<string, { error?: string; expiresAt: number }>();
-
+/** Drop expired entries once a cache grows past maxSize */
 export function pruneExpired<V extends { expiresAt: number }>(map: Map<string, V>, maxSize: number): void {
   if (map.size < maxSize) return;
   const now = Date.now();
@@ -258,38 +253,18 @@ export function pruneExpired<V extends { expiresAt: number }>(map: Map<string, V
 }
 
 /**
- * Reject instance URLs that resolve to loopback / private / link-local addresses,
- * unless the hostname is explicitly allow-listed by the operator.
+ * Reject instance URLs whose host is a private / loopback / link-local IP literal, unless
+ * allow-listed by the operator. Node never calls `lookup` for IP literals, so this covers
+ * what the connect-time guard (createGuardedLookup) cannot; hostnames are checked there,
+ * on the address actually connected to.
  */
 export async function assertPublicPlausibleHost(baseUrl: string, allowedHosts: string[] = []): Promise<void> {
   const hostname = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (allowedHosts.includes(hostname)) return;
+  if (allowedHosts.includes(hostname) || !net.isIP(hostname)) return;
 
-  const cached = hostChecks.get(hostname);
-  if (cached && Date.now() < cached.expiresAt) {
-    if (cached.error) throw new ConnectionConfigError(cached.error);
-    return;
+  if (isPrivateAddress(hostname)) {
+    throw new ConnectionConfigError(
+      `Plausible host "${hostname}" is a private or internal address, which is not allowed on this server.`,
+    );
   }
-
-  let error: string | undefined;
-  try {
-    const addresses = net.isIP(hostname)
-      ? [{ address: hostname }]
-      : await dns.lookup(hostname, { all: true, verbatim: true });
-
-    if (addresses.length === 0) {
-      error = `Plausible host "${hostname}" did not resolve.`;
-    } else if (addresses.some(({ address }) => isPrivateAddress(address))) {
-      error = `Plausible host "${hostname}" resolves to a private or internal address, which is not allowed on this server.`;
-    }
-  } catch {
-    error = `Plausible host "${hostname}" could not be resolved.`;
-  }
-
-  pruneExpired(hostChecks, HOST_CHECK_PRUNE_SIZE);
-  hostChecks.set(hostname, {
-    error,
-    expiresAt: Date.now() + (error ? HOST_CHECK_FAILURE_TTL_MS : HOST_CHECK_TTL_MS),
-  });
-  if (error) throw new ConnectionConfigError(error);
 }

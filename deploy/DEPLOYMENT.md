@@ -1,9 +1,9 @@
 # Plausible Analytics MCP — VPS Deployment Guide
 
-Target: `https://mcp.techmavie.digital/plausibleanalytics/` → nginx → `127.0.0.1:8096` → container `mcp-plausibleanalytics:8080`.
+Target: `https://mcp.techmavie.digital/plausibleanalytics/` → nginx → `127.0.0.1:8099` → container `mcp-plausibleanalytics:8080`.
 
 ```
-Client ──HTTPS──► nginx (/plausibleanalytics/) ──► 127.0.0.1:8096 ──► container :8080
+Client ──HTTPS──► nginx (/plausibleanalytics/) ──► 127.0.0.1:8099 ──► container :8080
                                                               │
                          mcp-network (external) ◄─────────────┤
                                 │                             ▼
@@ -24,7 +24,7 @@ Client ──HTTPS──► nginx (/plausibleanalytics/) ──► 127.0.0.1:809
 
 | Variable | Value |
 |----------|-------|
-| `HOST_PORT` | `8096` (check it is free: `sudo ss -ltnp \| grep 8096`) |
+| `HOST_PORT` | `8099` on mcp.techmavie.digital (8096 is taken there). Check a port is free with `sudo ss -ltnp \| grep 8099` |
 | `MCP_API_KEY` | `openssl rand -hex 32` |
 | `KEY_SERVICE_URL` | `http://mcp-key-service:8090/internal/resolve` |
 | `KEY_SERVICE_TOKEN` | same token as `plausible:<token>` in the key service |

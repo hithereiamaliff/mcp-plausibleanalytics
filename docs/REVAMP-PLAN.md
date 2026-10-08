@@ -536,3 +536,10 @@ publishing (can be a follow-up once stable); changing key-service pricing or por
 - mcp-key-service commit `13568aa`: `npm test` passes.
 
 **Still to do (needs you / the VPS)** — §7 runbook: VPS checks (port 8096, Firebase credentials path, CE version), token in `INTERNAL_SERVER_TOKENS`, `.env`, nginx block, GitHub secrets, push both repos, live check with a real Stats key.
+
+## 13. Deployment notes (2026-10-08)
+
+- **Two hosts:** the MCP servers and mcp-key-service run on the `mcp.techmavie.digital` VPS; self-hosted Plausible runs on a separate VPS (`plausible.mynameisaliff.co.uk`). The MCP reaches Plausible over its public HTTPS URL.
+- **Port:** 8096 was already taken on the MCP VPS, so the server runs on **8099** (repo defaults updated).
+- **Plausible upgraded** from CE v2.1.1 (no Stats API v2) to **v3.2.1** via v2.1.5 and v3.0.1; secrets moved from the compose file into `/opt/plausible/.env`, `SECRET_KEY_BASE` rotated.
+- **Live:** `https://mcp.techmavie.digital/plausibleanalytics/health` healthy (key service configured, Firebase connected); live-check 11/11 against the real instance; public auth paths verified (401 missing auth, 403 invalid key via the real key service, 405 GET, 404 OAuth metadata, 401 analytics without key).
